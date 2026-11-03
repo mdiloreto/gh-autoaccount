@@ -1,0 +1,29 @@
+# gh-autoaccount
+
+## Worktrees
+.worktrees/
+
+## Binary
+/.autoprofile-cache/
+/.autoaccount-cache/
+/bin/
+/dist/
+
+## Dependencies
+/vendor/
+
+## OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+## Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
