@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  autoaccount|autoaccount\ *) shift; exec "$DEMO_BINARY" "$@" ;;
+  --version) printf 'gh version 2.86.0 (offline fixture)\n' ;;
+  'auth status') printf 'github.com\n  Logged in to github.com account %s (keyring)\n  Logged in to github.com account bob (keyring)\n' "$(cat "$DEMO_ROOT/global-account")" ;;
+  'auth token --user alice --hostname github.com'|'auth token --user bob --hostname github.com')
+    [[ -z ${GH_TOKEN-}${GITHUB_TOKEN-}${GH_ENTERPRISE_TOKEN-}${GITHUB_ENTERPRISE_TOKEN-}${GH_HOST-} ]] || exit 1
+    printf 'fixture-%s-credential\n' "$4" ;;
+  'api user'|'api /user'|'api user --jq .login'|'api /user --jq .login'|'api --hostname github.com user --jq .login'|'api --hostname github.com /user --jq .login')
+    [[ -z ${GITHUB_TOKEN-}${GH_ENTERPRISE_TOKEN-}${GITHUB_ENTERPRISE_TOKEN-} && ( -z ${GH_HOST-} || ${GH_HOST-} == github.com ) ]] || exit 1
+    case ${GH_TOKEN-} in fixture-alice-credential) login=alice ;; fixture-bob-credential) login=bob ;; *) exit 1 ;; esac
+    if [[ $* == *'--jq .login' ]]; then printf '%s\n' "$login"; else printf '{"login":"%s"}\n' "$login"; fi ;;
+  *) printf 'Unsupported offline gh operation\n' >&2; exit 1 ;;
+esac
