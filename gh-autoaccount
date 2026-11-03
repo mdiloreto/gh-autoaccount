@@ -1,0 +1,66 @@
+#!/bin/sh
+set -eu
+
+# gh supplies its own executable path; never look up gh through a possible shim.
+case ${GH_PATH-} in /*) [ -x "$GH_PATH" ] || { echo 'autoaccount: GH_PATH is not executable' >&2; exit 1; } ;; *) echo 'autoaccount: gh must supply an absolute GH_PATH; use a newer GitHub CLI' >&2; exit 1 ;; esac
+original_path=${PATH-}
+PATH=/usr/bin:/bin
+export PATH
+root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+die() { echo "autoaccount: $*" >&2; exit 1; }
+repo_git() (
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_COUNT
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL
+  git -C "$root" "$@"
+)
+commit=$(repo_git rev-parse --verify 'HEAD^{commit}') || die 'cannot read installed revision'
+tags=$(repo_git tag --points-at "$commit" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$' || :)
+tag=${GH_AUTOPROFILE_RELEASE_TAG-}
+if [ -n "$tag" ]; then
+  case $tag in *[!a-zA-Z0-9.-]*) die 'invalid GH_AUTOPROFILE_RELEASE_TAG' ;; esac
+  printf '%s\n' "$tags" | grep -Fx -- "$tag" >/dev/null || die 'GH_AUTOPROFILE_RELEASE_TAG must name a prerelease tag on the installed commit'
+else
+  count=$(printf '%s\n' "$tags" | grep -c . || :)
+  [ "$count" = 1 ] || die 'no unique prerelease tag for this revision; set GH_AUTOPROFILE_RELEASE_TAG to a prerelease tag pointing at the installed commit and retry'
+  tag=$tags
+fi
+case $(uname -s) in Linux) os=linux ;; Darwin) os=darwin ;; *) die 'unsupported operating system; install a release binary manually' ;; esac
+case $(uname -m) in x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; *) die 'unsupported architecture; install a release binary manually' ;; esac
+asset="gh-autoaccount_${tag}_${os}-${arch}"
+cache="$root/.autoaccount-cache"
+[ ! -L "$cache" ] || die 'cache directory must not be a symlink'
+if [ ! -d "$cache" ]; then (umask 077; mkdir "$cache") || die 'cannot create cache'; fi
+chmod 700 "$cache"
+entry="$cache/$tag-$os-$arch"
+verify() {
+  [ -f "$1/checksums.txt" ] && [ ! -L "$1/checksums.txt" ] && [ -f "$1/$asset" ] && [ ! -L "$1/$asset" ] || return 1
+  expected=$(awk -v name="$asset" '$2 == name { print $1 }' "$1/checksums.txt")
+  case $expected in *[!0123456789abcdefABCDEF]*|'') return 1 ;; esac
+  [ "${#expected}" -eq 64 ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$1/$asset"); else actual=$(shasum -a 256 "$1/$asset"); fi
+  actual=${actual%% *}
+  [ "$actual" = "$expected" ]
+}
+if [ -e "$entry" ] || [ -L "$entry" ]; then
+  if ! { [ -d "$entry" ] && [ ! -L "$entry" ] && [ -f "$entry/commit" ] && [ ! -L "$entry/commit" ] && [ "$(cat "$entry/commit")" = "$commit" ] && verify "$entry"; }; then
+    die 'cached binary failed checksum verification; remove the cache entry and retry'
+  fi
+else
+  tmp=$(mktemp -d "$cache/.download.XXXXXXXX") || die 'cannot create private download directory'
+  trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
+  remote_commit=$("$GH_PATH" api --hostname github.com "repos/mdiloreto/gh-autoaccount/commits/$tag" --jq .sha) || die 'cannot verify release tag revision'
+  [ "$remote_commit" = "$commit" ] || die 'release tag does not match the installed commit'
+  "$GH_PATH" release download "$tag" --repo github.com/mdiloreto/gh-autoaccount --pattern "$asset" --pattern checksums.txt --dir "$tmp" || die 'release download failed'
+  verify "$tmp" || die 'release checksum verification failed'
+  chmod 700 "$tmp/$asset"
+  printf '%s\n' "$commit" > "$tmp/commit"
+  # mkdir is atomic: competing first runs fail closed instead of replacing a binary.
+  mkdir "$entry" || die 'another process is populating the cache; retry'
+  mv "$tmp/checksums.txt" "$tmp/$asset" "$tmp/commit" "$entry/" || die 'cannot populate cache'
+  rmdir "$tmp"
+  trap - EXIT HUP INT TERM
+fi
+PATH=$original_path
+export PATH
+exec "$entry/$asset" "$@"
