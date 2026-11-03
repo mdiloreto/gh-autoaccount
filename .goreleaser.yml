@@ -1,0 +1,75 @@
+version: 2
+
+project_name: gh-autoaccount
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - main: ./cmd/gh-autoaccount
+    binary: gh-autoaccount
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X github.com/mdiloreto/gh-autoaccount/internal/cmd.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - artifacts: binary
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: mdiloreto
+    name: gh-autoaccount
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Upgrade notes
+
+    This native-first beta retains the old configuration namespace for compatibility.
+    Use the [installation instructions for this tag](https://github.com/mdiloreto/gh-autoaccount/blob/{{ .Tag }}/README.md#installation).
+    Select the explicit release tag and matching platform asset, and verify its
+    checksum before execution. While the repository has only prereleases,
+    `gh extension install --pin` and `gh extension upgrade` are not reliable;
+    use the documented manual manifest workaround without removing the working
+    extension first.
+
+    Old and new extensions have separate names. After verifying the replacement,
+    review and explicitly approve setup or migration; no live configuration is
+    migrated automatically. If an old managed or malformed wrapper `.envrc`
+    blocks native setup, pin, unpin, or migration, review the whole file, run
+    `direnv deny`, manually remove only the managed block while preserving custom
+    content, reload the shell and clear old exports, then retry.
+
+    ```bash
+    GH_AUTOPROFILE_DISABLE_SHIM=1 command gh autoaccount setup --migrate
+    ```
+
+    Then restart your shell (or source your shell rc file).
+
+    This is community Beta software when the tag contains a prerelease suffix.
+    Report functional feedback through GitHub Issues and security concerns through
+    the repository's private vulnerability reporting flow.

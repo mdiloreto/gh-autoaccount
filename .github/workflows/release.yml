@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Install shell test dependencies
+        run: sudo apt-get update && sudo apt-get install -y zsh direnv gh
+
+      - name: Install verified direnv 2.38.2
+        run: |
+          GOBIN="$RUNNER_TEMP/direnv-bin" go install github.com/direnv/direnv/v2@v2.38.2
+          test "$("$RUNNER_TEMP/direnv-bin/direnv" version)" = 2.38.2
+          echo "$RUNNER_TEMP/direnv-bin" >> "$GITHUB_PATH"
+
+      - name: Test release source
+        env:
+          GOTOOLCHAIN: local
+          GH_AUTOPROFILE_REQUIRE_DIRENV_2382: "1"
+          GH_AUTOPROFILE_REQUIRE_REAL_GH: "1"
+        run: |
+          go mod tidy -diff
+          go test -count=1 ./...
+          go vet ./...
+          go build ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: v1.55.0
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "v2.19.0"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest release provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
