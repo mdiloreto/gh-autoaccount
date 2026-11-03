@@ -38,3 +38,19 @@ to be repeatable, not bit-for-bit build artifacts. This suite does not prove liv
 GitHub authentication, published releases, network isolation or real keyring
 integration. Run it twice in independent scratch directories when checking
 repeatability.
+
+## Terminal demo
+
+Populate the Go module cache once before offline verification, then verify the
+routing scenario and regenerate the GIF and MP4 from the repository root:
+
+```bash
+go mod download
+bash demo/record.sh --check
+bash demo/record.sh
+```
+
+Dependencies: Go, Bash, Git, and Python 3. Recording also needs VHS 0.12.1,
+ttyd 1.7.7, ffmpeg, and Chromium; `--check` does not need those recording tools.
+The recorder does not automatically install tools or change global configuration.
+Its simulated accounts and API responses do not prove live network authentication.

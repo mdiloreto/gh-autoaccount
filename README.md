@@ -4,6 +4,14 @@ Directory-scoped GitHub accounts for terminals and local agents. This GitHub CLI
 extension routes commands to a pinned account without switching the globally active
 account. Git authentication and Git author/committer identity are separate concerns.
 
+## Demo
+
+![Terminal demo of native setup and directory-scoped account selection](docs/demo.gif)
+
+[Watch the MP4](docs/demo.mp4)
+
+Offline demonstration using simulated accounts and API responses; account selection and credential injection are performed by gh-autoaccount. It shows native setup, a default account, and a directory pin without global account switching.
+
 ## Why
 
 GitHub CLI [added multi-account support](https://github.com/cli/cli/blob/trunk/docs/multiple-accounts.md)
