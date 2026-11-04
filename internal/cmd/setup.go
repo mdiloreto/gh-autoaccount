@@ -493,23 +493,24 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 					if err != nil {
 						fmt.Printf("    Cannot resolve shim dir: %v\n", err)
 						allGood = false
-					}
-					for _, target := range []string{rcPath, loginProfile(rcPath)} {
-						if err != nil || target == "" || shims.HasPathBlock(target) {
-							continue
-						}
-						if target != rcPath {
-							snapshot, snapErr := snapshotSetupRC(target)
-							if snapErr != nil {
-								fmt.Printf("    Cannot snapshot %s: %v\n", target, snapErr)
-								allGood = false
+					} else {
+						for _, target := range []string{rcPath, loginProfile(rcPath)} {
+							if target == "" || shims.HasPathBlock(target) {
 								continue
 							}
-							rollback = append(rollback, snapshot.restore)
-						}
-						if injectErr := shims.InjectPath(target, shimDir); injectErr != nil {
-							fmt.Printf("    Cannot configure shim PATH in %s: %v\n", target, injectErr)
-							allGood = false
+							if target != rcPath {
+								snapshot, snapErr := snapshotSetupRC(target)
+								if snapErr != nil {
+									fmt.Printf("    Cannot snapshot %s: %v\n", target, snapErr)
+									allGood = false
+									continue
+								}
+								rollback = append(rollback, snapshot.restore)
+							}
+							if err := shims.InjectPath(target, shimDir); err != nil {
+								fmt.Printf("    Cannot configure shim PATH in %s: %v\n", target, err)
+								allGood = false
+							}
 						}
 					}
 				}
