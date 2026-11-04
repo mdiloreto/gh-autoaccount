@@ -135,6 +135,25 @@ func TestDoctorReportsAndMigrationRepairsMissingHelperRealGH(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsMissingHelperRealGHInLegacyMode(t *testing.T) {
+	home := onboardingHome(t)
+	if err := config.SaveSettings(config.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := filepath.Join(home, "mise", "installs", "gh", "2.100.0", "bin", "gh")
+	if _, err := gitcred.Install(exe, removed); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOnboarding(t, NewDoctorCmd().Execute)
+	if !strings.Contains(out, "routing mode: legacy") || !strings.Contains(out, "WARN git credential helper gh is missing or not executable: "+removed) {
+		t.Fatal(out)
+	}
+}
+
 // Beta.1 installs pointed the proxy and helper into a cache directory that
 // disappears when gh replaces the extension with a binary install.
 func TestDoctorReportsAndMigrationRepairsVanishedExtensionTarget(t *testing.T) {

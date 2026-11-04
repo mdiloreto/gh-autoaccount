@@ -199,17 +199,18 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			} else {
 				fmt.Printf("OK   git credential helper target: %s\n", target)
 			}
-			if realGH, realErr := gitcred.RealGH(); realErr != nil {
-				fmt.Printf("WARN cannot inspect git credential helper gh: %v\n", realErr)
+		}
+		// Legacy installs can carry the same helper, so this runs in both modes.
+		if realGH, realErr := gitcred.RealGH(); realErr != nil {
+			fmt.Printf("WARN cannot inspect git credential helper gh: %v\n", realErr)
+			issues++
+		} else if realGH != "" { // older helpers pin no gh and resolve it at runtime
+			if info, statErr := os.Stat(realGH); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+				fmt.Printf("WARN git credential helper gh is missing or not executable: %s\n", realGH)
+				fmt.Println("     repair with: gh autoaccount setup --migrate")
 				issues++
-			} else if realGH != "" { // older helpers pin no gh and resolve it at runtime
-				if info, statErr := os.Stat(realGH); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-					fmt.Printf("WARN git credential helper gh is missing or not executable: %s\n", realGH)
-					fmt.Println("     repair with: gh autoaccount setup --migrate")
-					issues++
-				} else {
-					fmt.Printf("OK   git credential helper gh: %s\n", realGH)
-				}
+			} else {
+				fmt.Printf("OK   git credential helper gh: %s\n", realGH)
 			}
 		}
 	} else if settings.Native {
