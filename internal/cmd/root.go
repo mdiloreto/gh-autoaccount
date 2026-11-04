@@ -52,6 +52,7 @@ Quick start:
 		NewDoctorCmd(),
 		NewCredentialHelperCmd(),
 		NewShimGHCMD(),
+		NewSkillCmd(),
 	)
 
 	return cmd

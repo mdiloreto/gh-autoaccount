@@ -23,9 +23,8 @@ version check runs in an isolated environment but is not proof that a forwarding
 shim is the real CLI. CI uses `/usr/bin/gh` and logs its version; the
 Ubuntu image and apt package are not a pinned, bit-reproducible toolchain.
 
-The runner builds one candidate in a temporary directory, runs uncached launcher
-Go tests, then passes that candidate to the concurrent agent, native routing, and
-onboarding smoke tests. The onboarding test uses a real gh extension install and
+The runner builds one candidate in a temporary directory, then passes that
+candidate to the concurrent agent, native routing, and onboarding smoke tests. The onboarding test uses a real gh extension install and
 dispatch in an isolated local home, with dummy stored accounts. Fixtures exercise
 native setup, defaults, pins, explicit selection, missing-credential recovery and
 migration. The agent and native tests use their own local provider fixtures.

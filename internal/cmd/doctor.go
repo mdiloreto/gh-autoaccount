@@ -169,7 +169,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("OK   git credential helper installed")
 		fmt.Printf("     path: %s\n", helperPath)
 		if settings.Native {
-			fmt.Println("INFO helper target executable is not verified")
+			if target, targetErr := gitcred.Target(); targetErr != nil {
+				fmt.Printf("WARN cannot inspect git credential helper target: %v\n", targetErr)
+				issues++
+			} else if info, statErr := os.Stat(target); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+				fmt.Printf("WARN git credential helper target is missing or not executable: %s\n", target)
+				fmt.Println("     repair with: gh autoaccount setup --migrate")
+				issues++
+			} else {
+				fmt.Printf("OK   git credential helper target: %s\n", target)
+			}
 		}
 	} else if settings.Native {
 		fmt.Println("WARN required git credential helper missing or not executable")

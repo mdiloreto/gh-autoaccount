@@ -409,3 +409,14 @@ func TestOverwritingExplicitFalseIsAnnounced(t *testing.T) {
 		t.Fatalf("want exactly one overwrite note for github.com, got %q", out)
 	}
 }
+
+func TestTargetRoundTripsQuotedPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	want := "/opt/it's here/gh-autoaccount"
+	if _, err := Install(want, "/usr/bin/gh"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Target(); err != nil || got != want {
+		t.Fatalf("Target() = %q, %v; want %q", got, err, want)
+	}
+}

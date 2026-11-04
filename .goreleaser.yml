@@ -45,17 +45,19 @@ release:
     owner: mdiloreto
     name: gh-autoaccount
   draft: false
-  prerelease: auto
+  # GitHub CLI discovers precompiled extension binaries only through the latest
+  # release, which GitHub never resolves to a release flagged as a prerelease.
+  prerelease: false
+  make_latest: true
   footer: |
     ## Upgrade notes
 
-    This native-first beta retains the old configuration namespace for compatibility.
-    Use the [installation instructions for this tag](https://github.com/mdiloreto/gh-autoaccount/blob/{{ .Tag }}/README.md#installation).
-    Select the explicit release tag and matching platform asset, and verify its
-    checksum before execution. While the repository has only prereleases,
-    `gh extension install --pin` and `gh extension upgrade` are not reliable;
-    use the documented manual manifest workaround without removing the working
-    extension first.
+    Install or upgrade with `gh extension install mdiloreto/gh-autoaccount` or
+    `gh extension upgrade autoaccount`; see the
+    [installation instructions for this tag](https://github.com/mdiloreto/gh-autoaccount/blob/{{ .Tag }}/README.md#installation).
+    Verify the matching platform asset against `checksums.txt` before running it
+    if you download it manually. This native-first beta retains the old
+    configuration namespace for compatibility.
 
     Old and new extensions have separate names. After verifying the replacement,
     review and explicitly approve setup or migration; no live configuration is
@@ -70,6 +72,7 @@ release:
 
     Then restart your shell (or source your shell rc file).
 
-    This is community Beta software when the tag contains a prerelease suffix.
+    This is community Beta software when the tag contains a `-beta` suffix; the
+    GitHub release is intentionally not flagged as a prerelease.
     Report functional feedback through GitHub Issues and security concerns through
     the repository's private vulnerability reporting flow.

@@ -66,6 +66,28 @@ GH_PATH=%s GH_AUTOPROFILE_REAL_GH=%s exec %s __git-credential "$@"
 	return helperPath, nil
 }
 
+var helperTargetPattern = regexp.MustCompile(`exec '((?:[^']|'\\'')*)' __git-credential "\$@"\n\z`)
+
+// Target returns the executable the managed helper script delegates to.
+func Target() (string, error) {
+	helperPath, err := HelperPath()
+	if err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(helperPath)
+	if err != nil {
+		return "", err
+	}
+	if !managedHelperPattern.Match(content) {
+		return "", fmt.Errorf("git credential helper is not managed")
+	}
+	match := helperTargetPattern.FindSubmatch(content)
+	if match == nil {
+		return "", fmt.Errorf("git credential helper target not found")
+	}
+	return strings.ReplaceAll(string(match[1]), `'\''`, "'"), nil
+}
+
 // IsInstalled reports whether the helper script exists.
 func IsInstalled() bool {
 	path, err := HelperPath()
