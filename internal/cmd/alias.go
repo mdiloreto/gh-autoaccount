@@ -57,11 +57,15 @@ func (w *aliasOutput) Write(p []byte) (int, error) {
 	return w.Buffer.Write(p)
 }
 
+// aliasTimeout bounds each gh alias call; a variable so real-gh tests on loaded
+// CI runners can tolerate a slow cold start.
+var aliasTimeout = 5 * time.Second
+
 func runAliasGH(ctx context.Context, realGH string, args ...string) ([]byte, error) {
 	if !filepath.IsAbs(realGH) {
 		return nil, errors.New("gh path is not absolute")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, aliasTimeout)
 	defer cancel()
 	out := &aliasOutput{cancel: cancel}
 	command := exec.CommandContext(ctx, realGH, args...)
