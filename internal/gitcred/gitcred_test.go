@@ -126,6 +126,33 @@ func TestInstallRefusesUnmanagedAndMigratesLegacy(t *testing.T) {
 	}
 }
 
+func TestRealGH(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, err := Install("/tmp/extension", "/opt/gh's/bin/gh"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RealGH(); err != nil || got != "/opt/gh's/bin/gh" {
+		t.Fatalf("RealGH = %q, %v", got, err)
+	}
+	path, err := HelperPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := "#!/usr/bin/env bash\nset -euo pipefail\nexec '/old/extension' __git-credential \"$@\"\n"
+	if err := os.WriteFile(path, []byte(legacy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RealGH(); err != nil || got != "" {
+		t.Fatalf("legacy helper RealGH = %q, %v; want none recorded", got, err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec /somewhere/else\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RealGH(); err == nil {
+		t.Fatal("unmanaged helper accepted")
+	}
+}
+
 func TestInstalledHelperOverridesBothGHPaths(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
