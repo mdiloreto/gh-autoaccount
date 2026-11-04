@@ -469,8 +469,9 @@ The owner comes from the Git credential request path, gh's `-R/--repo`,
 `GH_REPO`, the target of `gh repo clone` (which ignores both `-R` and `GH_REPO`),
 then the working directory's remote: the one marked `gh-resolved`, else
 `upstream`, `github`, `origin` (gh's order), else the only remote. gh's flag table
-is not known here, so a `-R` right after another flag could be that flag's value
-and never selects: put `--repo=OWNER/REPO`, or `-R` before other flags. `exec
+is not known here, so any `-R`/`--repo` form right after another flag could be that
+flag's value and never selects, `=` or not: put it before other flags or right after
+a positional argument. `exec
 --require-pin` accepts an owner or a directory pin.
 
 With `setup --git-identity`, `git_email`/`git_name` on an owner pin apply to

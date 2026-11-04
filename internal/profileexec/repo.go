@@ -100,10 +100,11 @@ func defaultRepoHost() string {
 	return "github.com"
 }
 
-// repoFlag finds gh's -R/--repo value. gh's flag table is not known here, so a
-// candidate right after another bare flag might be that flag's value
-// (`-t -Rx`, `--body --repo x`) and never selects. --repo=X and -R=X are
-// unambiguous anywhere.
+// repoFlag finds gh's -R/--repo value. gh's flag table is not known here, and a
+// value-taking flag consumes the next token whatever it looks like, so any
+// candidate (-R x, -Rx, -R=x, --repo x, --repo=x) right after another bare flag
+// might be that flag's value (`-t --repo=x`) and never selects. A candidate at
+// the start or right after a non-flag token is unambiguous in every form.
 func repoFlag(args []string) (string, bool) {
 	for i, arg := range args {
 		if arg == "--" {
@@ -111,11 +112,11 @@ func repoFlag(args []string) (string, bool) {
 		}
 		ambiguous := i > 0 && isBareFlag(args[i-1])
 		switch {
+		case ambiguous:
 		case strings.HasPrefix(arg, "--repo="):
 			return strings.TrimPrefix(arg, "--repo="), true
 		case strings.HasPrefix(arg, "-R="):
 			return strings.TrimPrefix(arg, "-R="), true
-		case ambiguous:
 		case arg == "-R" || arg == "--repo":
 			if i+1 < len(args) {
 				return args[i+1], true
