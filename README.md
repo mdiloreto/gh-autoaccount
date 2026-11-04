@@ -269,6 +269,12 @@ first other `gh` on the PATH it was started with, so the version mise selects,
 including a project pin, keeps applying. An explicit `GH_PATH` or
 `GH_AUTOPROFILE_REAL_GH` overrides that choice.
 
+Setup recognizes only the exact absolute directory it writes, so remove any
+hand-written alternate spelling (`~/...`, a trailing slash) yourself. If a
+`--mise=false` fails after unregistering, rollback re-adds the entry at the end of
+`env._.path`, not at its original position, because mise's CLI cannot insert at a
+position.
+
 `setup --mise` needs an existing global mise config that mise trusts. If it fails
 with "not trusted", create the config or run `mise trust`, then retry.
 

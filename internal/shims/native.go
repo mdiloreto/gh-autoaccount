@@ -117,10 +117,29 @@ func CheckMiseGHReplaceable() error {
 	return ensureManagedOrMissing(path)
 }
 
+// CheckMiseGHLayout refuses a gh-only directory, or its parent, that is a
+// symlink. Install and rollback create and prune real directories, and must not
+// replace someone's symlinked layout with a physical one.
+func CheckMiseGHLayout() error {
+	dir, err := MiseGHDir()
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{dir, filepath.Dir(dir)} {
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use %s: it is a symlink; the gh-only directory must be a real directory", path)
+		}
+	}
+	return nil
+}
+
 // checkMiseGHDirPure enforces that the whole directory can safely sit ahead of
 // mise's tools. Install's transient temp directories are not commands, so a
-// leftover from an interrupted run is tolerated.
+// leftover from an interrupted run is tolerated, but only as a directory.
 func checkMiseGHDirPure(dir string) error {
+	if err := CheckMiseGHLayout(); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
@@ -129,7 +148,7 @@ func checkMiseGHDirPure(dir string) error {
 		return fmt.Errorf("cannot inspect gh-only directory: %w", err)
 	}
 	for _, entry := range entries {
-		if name := entry.Name(); name != "gh" && !strings.HasPrefix(name, ".gh-autoprofile-") {
+		if name := entry.Name(); name != "gh" && !(entry.IsDir() && strings.HasPrefix(name, ".gh-autoprofile-")) {
 			return fmt.Errorf("refusing to use %s as the gh-only directory: it also contains %q", dir, name)
 		}
 	}
@@ -182,6 +201,9 @@ func InstallMiseGH(extensionBinaryPath string) (string, error) {
 func RemoveMiseGH() (bool, error) {
 	path, err := MiseGHPath()
 	if err != nil {
+		return false, err
+	}
+	if err := CheckMiseGHLayout(); err != nil {
 		return false, err
 	}
 	if !managedNativeLink(path) {

@@ -25,6 +25,7 @@ printf '%s\n' "$*" >> "$MISE_FAKE_LOG"
 if [ -e "$MISE_FAKE_FAIL" ]; then echo "fake mise failure" >&2; exit 1; fi
 case "$1 $2 $3 $4" in
 "config get -g env._.path")
+  if [ -n "$MISE_FAKE_GET_RAW" ]; then printf '%s\n' "$MISE_FAKE_GET_RAW"; exit 0; fi
   if [ -s "$MISE_FAKE_TOML" ]; then
     printf '['; sed 's/.*/"&"/' "$MISE_FAKE_TOML" | paste -sd, | tr -d '\n'; printf ']\n'
     exit 0
@@ -68,6 +69,7 @@ func installFakeMise(t *testing.T, home string) *fakeMise {
 	t.Setenv("MISE_FAKE_FAIL", fm.fail)
 	t.Setenv("MISE_FAKE_FAIL_AFTER", fm.failAfter)
 	t.Setenv("MISE_FAKE_EXEC_GH", "")
+	t.Setenv("MISE_FAKE_GET_RAW", "")
 	miseExecutable = func() (string, error) { return fm.path, nil }
 	return fm
 }
@@ -743,5 +745,95 @@ func TestRunMiseIsBoundedWhenAChildHoldsThePipe(t *testing.T) {
 	_, _ = runMise("exec")
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("runMise waited %s for a lingering child", elapsed)
+	}
+}
+
+func TestParseMisePath(t *testing.T) {
+	for _, tc := range []struct {
+		out     string
+		want    []string
+		wantErr bool
+	}{
+		{out: "", want: nil},
+		{out: `[]`, want: nil},
+		{out: `["/a"]`, want: []string{"/a"}},
+		{out: `["/a", "/b c"]`, want: []string{"/a", "/b c"}},
+		{out: `~/bin`, want: []string{"~/bin"}},
+		{out: `["C:\x", "/b"]`, want: []string{`C:\x`, "/b"}},
+		{out: `{ a = 1 }`, wantErr: true},
+		{out: `["/a", 1]`, wantErr: true},
+		{out: `[1]`, wantErr: true},
+		{out: `["/a"`, wantErr: true},
+	} {
+		got, err := parseMisePath(tc.out)
+		if (err != nil) != tc.wantErr || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("parseMisePath(%q) = %q, %v", tc.out, got, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "env._.path") {
+			t.Errorf("error must name the key: %v", err)
+		}
+	}
+}
+
+func TestSetupMiseHandlesScalarAndRejectsOddPathShapes(t *testing.T) {
+	requireNative(t)
+	t.Run("scalar", func(t *testing.T) {
+		home := onboardingHome(t)
+		fm := installFakeMise(t, home)
+		t.Setenv("MISE_FAKE_GET_RAW", "~/bin")
+		runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
+		dir := miseDir(t)
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{"config set -g --append env._.path " + dir}) || !loadSettings(t).Mise {
+			t.Fatalf("scalar value blocked enable: %q", got)
+		}
+	})
+	t.Run("table fails closed", func(t *testing.T) {
+		home := onboardingHome(t)
+		fm := installFakeMise(t, home)
+		t.Setenv("MISE_FAKE_GET_RAW", "{ a = 1 }")
+		err := runSetupArgsErr("--native", "--no-shell-rc", "--mise")
+		if err == nil || !strings.Contains(err.Error(), "env._.path") {
+			t.Fatalf("expected an error naming the key: %v", err)
+		}
+		if len(fm.calls(t)) != 0 || shims.IsNativeGHInstalled() || loadSettings(t).Mise {
+			t.Fatal("state changed despite the unreadable config")
+		}
+	})
+}
+
+func TestSetupMiseRefusesSymlinkedLayout(t *testing.T) {
+	requireNative(t)
+	for _, which := range []string{"dir", "parent"} {
+		t.Run(which, func(t *testing.T) {
+			home := onboardingHome(t)
+			fm := installFakeMise(t, home)
+			dir := miseDir(t)
+			real := filepath.Join(home, "real-layout")
+			if err := os.MkdirAll(filepath.Join(real, "bin"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			link, target := dir, filepath.Join(real, "bin")
+			if which == "parent" {
+				link, target = filepath.Dir(dir), real
+			}
+			if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"--native", "--no-shell-rc", "--mise"}, {"--mise=false"}} {
+				err := runSetupArgsErr(args...)
+				if err == nil || !strings.Contains(err.Error(), "symlink") {
+					t.Fatalf("%v: expected symlink refusal: %v", args, err)
+				}
+			}
+			if len(fm.calls(t)) != 0 || shims.IsNativeGHInstalled() {
+				t.Fatal("state changed despite the refusal")
+			}
+			if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("symlinked layout replaced: %v", err)
+			}
+		})
 	}
 }

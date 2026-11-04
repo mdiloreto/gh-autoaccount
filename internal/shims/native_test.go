@@ -303,3 +303,66 @@ func TestMiseGHRefusesDirectoryWithOtherEntries(t *testing.T) {
 		t.Fatalf("shim created despite refusal: %v", err)
 	}
 }
+
+func TestMiseGHTempPrefixToleratedOnlyAsDirectory(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			home := miseShimHome(t)
+			dir, _ := MiseGHDir()
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, ".gh-autoprofile-x")
+			if kind == "file" {
+				if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(home, path); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckMiseGHReplaceable(); err == nil {
+				t.Fatal("non-directory with the temp prefix accepted")
+			}
+		})
+	}
+}
+
+func TestMiseGHRefusesSymlinkedLayout(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	for _, which := range []string{"dir", "parent"} {
+		t.Run(which, func(t *testing.T) {
+			home := miseShimHome(t)
+			ext := filepath.Join(home, "extension")
+			writeExtension(t, ext)
+			dir, _ := MiseGHDir()
+			real := filepath.Join(home, "real")
+			if err := os.MkdirAll(filepath.Join(real, "bin"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			link, target := dir, filepath.Join(real, "bin")
+			if which == "parent" {
+				link, target = filepath.Dir(dir), real
+			}
+			if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckMiseGHReplaceable(); err == nil {
+				t.Fatal("check accepted a symlinked layout")
+			}
+			if _, err := InstallMiseGH(ext); err == nil {
+				t.Fatal("installed through a symlinked layout")
+			}
+			if _, err := RemoveMiseGH(); err == nil {
+				t.Fatal("removal accepted a symlinked layout")
+			}
+		})
+	}
+}

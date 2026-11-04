@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +61,29 @@ func miseUnregister(dir string) error {
 	return err
 }
 
+// parseMisePath turns `mise config get` output for env._.path into its entries.
+// mise prints a scalar string bare and an array as `["a", "b"]` without JSON
+// escaping, so the array is split on its separators instead of JSON-decoded.
+// Any other shape is an error rather than a guess.
+func parseMisePath(out string) ([]string, error) {
+	switch {
+	case strings.HasPrefix(out, "["):
+		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(out, "["), "]"))
+		if !strings.HasSuffix(out, "]") || (inner != "" && (len(inner) < 2 || !strings.HasPrefix(inner, `"`) || !strings.HasSuffix(inner, `"`))) {
+			return nil, fmt.Errorf("unsupported mise env._.path value %q: expected a list of strings", out)
+		}
+		if inner == "" {
+			return nil, nil
+		}
+		return strings.Split(inner[1:len(inner)-1], `", "`), nil
+	case strings.HasPrefix(out, "{"):
+		return nil, fmt.Errorf("unsupported mise env._.path value %q: expected a string or a list of strings", out)
+	case out == "":
+		return nil, nil
+	}
+	return []string{out}, nil
+}
+
 // miseRegistered reads whether dir is currently in mise's global env._.path, so
 // rollback can restore exactly what was there rather than infer it. A missing
 // key is mise's way of saying the list is empty.
@@ -73,9 +95,9 @@ func miseRegistered(dir string) (bool, error) {
 		}
 		return false, err
 	}
-	var entries []string
-	if err := json.Unmarshal([]byte(out), &entries); err != nil {
-		return false, fmt.Errorf("cannot parse mise env._.path %q: %w", out, err)
+	entries, err := parseMisePath(out)
+	if err != nil {
+		return false, err
 	}
 	return slices.Contains(entries, dir), nil
 }
@@ -93,6 +115,9 @@ func applyMise(enable bool, extensionBinary string, addUndo func(func() error)) 
 	}
 	path, err := shims.MiseGHPath()
 	if err != nil {
+		return "", err
+	}
+	if err := shims.CheckMiseGHLayout(); err != nil {
 		return "", err
 	}
 	snapshot, err := snapshotSetupFile(path)
