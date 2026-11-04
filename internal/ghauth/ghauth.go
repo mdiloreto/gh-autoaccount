@@ -429,6 +429,11 @@ func validGH(path string) bool {
 	} else {
 		return false
 	}
+	// The gh-only directory holds nothing but the shim, so even a stale link left
+	// by an older extension binary is never a real gh.
+	if shims.IsMiseGHPath(path) {
+		return false
+	}
 	if shim, err := shims.GHPath(); err == nil && shims.IsGHInstalled() {
 		if shimInfo, err := os.Stat(shim); err == nil && os.SameFile(info, shimInfo) {
 			return false

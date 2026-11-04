@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"os"
-	osexec "os/exec"
 	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
@@ -171,8 +170,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		cmd.Println("    managed Git identity: disabled (setup --git-identity to enable)")
 	}
-	if ghPath, err := osexec.LookPath("gh"); err == nil {
-		cmd.Printf("    gh on PATH:           %s\n", sanitizeStatusValue(ghPath))
+	if gh := diagnostics.GHOnPath; gh != nil {
+		cmd.Printf("    gh on PATH:           %s\n", sanitizeStatusValue(gh.Path))
+		if settings.Native && shims.IsNativeGHInstalled() && !gh.NativeShim {
+			cmd.Println("    WARN: gh on PATH is not the managed shim; " + sanitizeStatusValue(shadowFixHint(gh.Path, settings)))
+		}
+	}
+	if settings.Mise {
+		cmd.Printf("    mise gh-only shim:    installed=%t\n", shims.IsMiseGHInstalled())
 	}
 	if realGHPath, err := ghauth.ResolveGHPath(); err == nil {
 		cmd.Printf("    real gh binary:       %s\n", sanitizeStatusValue(realGHPath))

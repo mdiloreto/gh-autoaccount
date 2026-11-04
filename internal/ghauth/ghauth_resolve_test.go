@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
 
 func TestGHPathIsAuthoritative(t *testing.T) {
@@ -543,4 +545,94 @@ func TestResolveGHOverrideUnmanagedDefaultShimPath(t *testing.T) {
 	if got, err := ResolveGHPath(); err != nil || got != path {
 		t.Fatalf("unmanaged real gh override = %q, %v", got, err)
 	}
+}
+
+// A gh-only shim whose target is not the running binary (for example after an
+// upgrade) looks like an ordinary executable; resolution must still skip it, or
+// the shim would exec itself.
+func TestResolveGHPathSkipsGHOnlyShim(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("GH_PATH", "")
+	t.Setenv("GH_AUTOPROFILE_REAL_GH", "")
+	ext := filepath.Join(root, "extension")
+	real := filepath.Join(root, "real", "gh")
+	if err := os.MkdirAll(filepath.Dir(real), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{ext, real} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shim, err := shims.InstallMiseGH(ext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(shim)+string(os.PathListSeparator)+filepath.Dir(real))
+	if got, err := ResolveGHPath(); err != nil || got != real {
+		t.Fatalf("resolved %q: %v", got, err)
+	}
+}
+
+func TestStaleGHOnlyShimIsNeverAcceptedAsRealGH(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("GH_PATH", "")
+	t.Setenv("GH_AUTOPROFILE_REAL_GH", "")
+	ext := filepath.Join(root, "old-extension")
+	real := filepath.Join(root, "real", "gh")
+	if err := os.MkdirAll(filepath.Dir(real), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{ext, real} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shim, err := shims.InstallMiseGH(ext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Orphan the link, as after an upgrade that rewrote the ownership record.
+	record := filepath.Join(root, "config", "gh-autoprofile", "native-gh-targets.json")
+	if err := os.WriteFile(record, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	linkedDir := filepath.Join(root, "linked")
+	if err := os.Symlink(filepath.Dir(shim), linkedDir); err != nil {
+		t.Fatal(err)
+	}
+	viaLink := filepath.Join(linkedDir, "gh")
+	elsewhere := filepath.Join(root, "alias-gh")
+	if err := os.Symlink(shim, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, candidate := range []string{shim, viaLink, elsewhere} {
+		for _, env := range []string{"GH_PATH", "GH_AUTOPROFILE_REAL_GH"} {
+			t.Run(env+"/"+filepath.Base(candidate), func(t *testing.T) {
+				t.Setenv(env, candidate)
+				if got, err := ResolveGHPath(); err == nil || got != "" {
+					t.Fatalf("stale shim accepted: %q", got)
+				}
+			})
+		}
+	}
+	t.Run("symlinked PATH directory", func(t *testing.T) {
+		t.Setenv("PATH", linkedDir+string(os.PathListSeparator)+filepath.Dir(real))
+		if got, err := ResolveGHPath(); err != nil || got != real {
+			t.Fatalf("resolved %q: %v", got, err)
+		}
+	})
 }

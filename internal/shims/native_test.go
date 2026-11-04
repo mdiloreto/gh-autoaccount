@@ -131,3 +131,238 @@ func TestNativeRefusesUnmanagedFileAndDirectory(t *testing.T) {
 		})
 	}
 }
+
+func miseShimHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	return home
+}
+
+func writeExtension(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMiseGHDirFollowsXDGDataHome(t *testing.T) {
+	home := miseShimHome(t)
+	if dir, err := MiseGHDir(); err != nil || dir != filepath.Join(home, "data", "gh-autoaccount", "bin") {
+		t.Fatalf("XDG data dir: %q, %v", dir, err)
+	}
+	t.Setenv("XDG_DATA_HOME", "")
+	if dir, err := MiseGHDir(); err != nil || dir != filepath.Join(home, ".local", "share", "gh-autoaccount", "bin") {
+		t.Fatalf("default data dir: %q, %v", dir, err)
+	}
+}
+
+func TestMiseGHDirHoldsOnlyTheShimAndSurvivesRelocation(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	home := miseShimHome(t)
+	first, second := filepath.Join(home, "extension-one"), filepath.Join(home, "extension-two")
+	writeExtension(t, first)
+	writeExtension(t, second)
+	native, err := InstallNativeGH(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mise, err := InstallMiseGH(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := MiseGHDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "gh" {
+		t.Fatalf("gh-only dir must hold only gh: %v, %v", entries, err)
+	}
+	if !IsNativeGHInstalled() || !IsMiseGHInstalled() {
+		t.Fatal("shims not detected")
+	}
+	for _, path := range []string{native, mise} {
+		if !IsManagedGHShim(path) {
+			t.Fatalf("%s not recognized as a managed shim", path)
+		}
+	}
+	if IsManagedGHShim(first) || IsManagedGHShim(filepath.Join(home, "missing", "gh")) {
+		t.Fatal("unrelated paths recognized as managed shims")
+	}
+
+	// Relocating the extension through one shim must not orphan the other.
+	if _, err := InstallNativeGH(second); err != nil {
+		t.Fatal(err)
+	}
+	if !IsMiseGHInstalled() {
+		t.Fatal("native relocation orphaned the gh-only shim")
+	}
+	if _, err := InstallMiseGH(second); err != nil {
+		t.Fatalf("gh-only shim relocation: %v", err)
+	}
+	if got := nativeTargets(); len(got) != 1 || got[0] != second {
+		t.Fatalf("stale ownership targets retained: %v", got)
+	}
+}
+
+func TestMiseGHRefusesUnmanagedPathsAndRemoveLeavesThemAlone(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	for _, kind := range []string{"file", "symlink", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			home := miseShimHome(t)
+			ext := filepath.Join(home, "extension")
+			writeExtension(t, ext)
+			path, _ := MiseGHPath()
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "file":
+				if err := os.WriteFile(path, []byte("#!/bin/sh\necho untouched\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(ext, path); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.Mkdir(path, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := CheckMiseGHReplaceable(); err == nil {
+				t.Fatal("unmanaged path considered replaceable")
+			}
+			if _, err := InstallMiseGH(ext); err == nil {
+				t.Fatal("replaced unmanaged path")
+			}
+			if removed, err := RemoveMiseGH(); err != nil || removed {
+				t.Fatalf("removed unmanaged path: %v, %v", removed, err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("unmanaged path disappeared: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoveMiseGHRemovesManagedShimAndEmptyDirs(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	home := miseShimHome(t)
+	ext := filepath.Join(home, "extension")
+	writeExtension(t, ext)
+	if _, err := InstallMiseGH(ext); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveMiseGH(); err != nil || !removed {
+		t.Fatalf("remove: %v, %v", removed, err)
+	}
+	dir, _ := MiseGHDir()
+	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
+		t.Fatalf("empty directories retained: %v", err)
+	}
+	if removed, err := RemoveMiseGH(); err != nil || removed {
+		t.Fatalf("second remove: %v, %v", removed, err)
+	}
+}
+
+func TestMiseGHRefusesDirectoryWithOtherEntries(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	home := miseShimHome(t)
+	ext := filepath.Join(home, "extension")
+	writeExtension(t, ext)
+	dir, _ := MiseGHDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A leftover install temp directory is not a command and is tolerated.
+	if err := os.Mkdir(filepath.Join(dir, ".gh-autoprofile-leftover"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMiseGHReplaceable(); err != nil {
+		t.Fatalf("temp leftover refused: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMiseGHReplaceable(); err == nil {
+		t.Fatal("foreign entry accepted")
+	}
+	if _, err := InstallMiseGH(ext); err == nil {
+		t.Fatal("installed into an impure directory")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "gh")); !os.IsNotExist(err) {
+		t.Fatalf("shim created despite refusal: %v", err)
+	}
+}
+
+func TestMiseGHTempPrefixToleratedOnlyAsDirectory(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			home := miseShimHome(t)
+			dir, _ := MiseGHDir()
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, ".gh-autoprofile-x")
+			if kind == "file" {
+				if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(home, path); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckMiseGHReplaceable(); err == nil {
+				t.Fatal("non-directory with the temp prefix accepted")
+			}
+		})
+	}
+}
+
+func TestMiseGHRefusesSymlinkedLayout(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	for _, which := range []string{"dir", "parent"} {
+		t.Run(which, func(t *testing.T) {
+			home := miseShimHome(t)
+			ext := filepath.Join(home, "extension")
+			writeExtension(t, ext)
+			dir, _ := MiseGHDir()
+			real := filepath.Join(home, "real")
+			if err := os.MkdirAll(filepath.Join(real, "bin"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			link, target := dir, filepath.Join(real, "bin")
+			if which == "parent" {
+				link, target = filepath.Dir(dir), real
+			}
+			if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckMiseGHReplaceable(); err == nil {
+				t.Fatal("check accepted a symlinked layout")
+			}
+			if _, err := InstallMiseGH(ext); err == nil {
+				t.Fatal("installed through a symlinked layout")
+			}
+			if _, err := RemoveMiseGH(); err == nil {
+				t.Fatal("removal accepted a symlinked layout")
+			}
+		})
+	}
+}

@@ -48,6 +48,10 @@ func onboardingHome(t *testing.T) string {
 		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A developer's real mise must never be driven by unrelated tests.
+	realMise := miseExecutable
+	miseExecutable = func() (string, error) { return "", exec.ErrNotFound }
+	t.Cleanup(func() { miseExecutable = realMise })
 	return home
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
+	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 	"github.com/spf13/cobra"
 )
 
@@ -69,6 +70,12 @@ type gitDiagnostics struct {
 	Error          *diagnosticError `json:"error,omitempty"`
 }
 
+// ghOnPathDiagnostics is where plain gh resolves in the calling environment.
+type ghOnPathDiagnostics struct {
+	Path       string `json:"path"`
+	NativeShim bool   `json:"native_shim"`
+}
+
 type statusDiagnostics struct {
 	SchemaVersion   int             `json:"schema_version"`
 	Directory       string          `json:"directory"`
@@ -81,6 +88,8 @@ type statusDiagnostics struct {
 	Environment          environmentDiagnostics    `json:"environment"`
 	Authentication       authenticationDiagnostics `json:"authentication"`
 	Git                  gitDiagnostics            `json:"git"`
+	// GHOnPath is omitted when no gh is on PATH.
+	GHOnPath *ghOnPathDiagnostics `json:"gh_on_path,omitempty"`
 }
 
 func diagnosticsPreRun(cmd *cobra.Command, args []string) error {
@@ -144,6 +153,9 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 	}
 	if ctx.SelectedUser != "" {
 		result.SelectionSource = ctx.SelectionSource
+	}
+	if ghPath, lookErr := exec.LookPath("gh"); lookErr == nil {
+		result.GHOnPath = &ghOnPathDiagnostics{Path: ghPath, NativeShim: shims.IsManagedGHShim(ghPath)}
 	}
 	if err != nil {
 		result.Authentication.Selected = result.SelectedUser != ""

@@ -28,6 +28,7 @@ func NewSetupCmd() *cobra.Command {
   2. The shell hook (native wrapper cleanup, or deprecated legacy wrappers)
   3. For native routing, a PATH-level gh proxy and GitHub HTTPS credential helper
   4. Optionally, Git-native path-scoped identity (--git-identity)
+  5. Optionally, mise compatibility (--mise) for native routing
 
 Use --no-shell-rc for externally managed shell integration. This preference is
 persisted: future setup, --migrate, and doctor --fix leave RC and PATH untouched.
@@ -54,6 +55,7 @@ repair permissions, and update existing pins to the latest defaults.`,
 	cmd.Flags().Bool("no-shell-rc", false, "Persist external shell integration; do not edit shell RC or PATH")
 	cmd.Flags().Bool("git-identity", false, "Enable managed Git includeIf identity from pins (persists across migration)")
 	cmd.Flags().Bool("native", false, "Use native gh routing and Git helper (default for a fresh install); false selects deprecated legacy routing and retains the helper")
+	cmd.Flags().Bool("mise", false, "Keep plain gh on the managed shim when mise manages gh (native routing; persisted); false undoes it")
 	cmd.Flags().Bool("alias", false, "Optionally configure the non-clobbering gh aa alias")
 	return cmd
 }
@@ -82,6 +84,26 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	if settings.Native && !shims.NativeGHSupported() {
 		return fmt.Errorf("native gh routing is unsupported on this platform")
+	}
+	miseChanged := cmd.Flags().Changed("mise")
+	if miseChanged {
+		settings.Mise, _ = cmd.Flags().GetBool("mise")
+	}
+	if settings.Mise {
+		if !settings.Native {
+			if miseChanged {
+				return fmt.Errorf("--mise requires native routing; run: gh autoaccount setup --native --mise")
+			}
+			return fmt.Errorf("mise integration requires native routing; run `gh autoaccount setup --mise=false` before leaving native routing")
+		}
+		if miseChanged {
+			if _, err := miseExecutable(); err != nil {
+				return fmt.Errorf("--mise requires the mise executable on PATH: %w", err)
+			}
+		}
+		if err := shims.CheckMiseGHReplaceable(); err != nil {
+			return err
+		}
 	}
 	gitIdentity, _ := cmd.Flags().GetBool("git-identity")
 	if gitIdentity {
@@ -319,6 +341,27 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		return errors.Join(recordSnapshot.restore(), shimSnapshot.restore())
 	}
+	configureMise := func() error {
+		fmt.Print("  Configuring mise............ ")
+		warning, err := applyMise(settings.Mise, libraryBinary, func(undo func() error) { rollback = append(rollback, undo) })
+		if err != nil {
+			fmt.Println("FAILED")
+			return err
+		}
+		fmt.Println("OK")
+		if warning != "" {
+			fmt.Println("    " + warning)
+			allGood = false
+		}
+		return nil
+	}
+	// Disabling runs first: a legacy transition drops the ownership record that
+	// proves the gh-only shim is ours, and removal only touches an owned shim.
+	if miseChanged && !settings.Mise {
+		if err := configureMise(); err != nil {
+			return err
+		}
+	}
 	// Native mode requires both the proxy and Git helper before it is persisted.
 	if settings.Native {
 		binPath, err := resolveBinaryPath()
@@ -348,6 +391,12 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		rollback = append(rollback, restoreProxy)
 		if _, err := shims.InstallGH(binPath, realGH); err != nil {
 			return fmt.Errorf("cannot restore legacy gh shim: %w", err)
+		}
+	}
+
+	if settings.Mise {
+		if err := configureMise(); err != nil {
+			return err
 		}
 	}
 

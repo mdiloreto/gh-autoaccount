@@ -17,6 +17,7 @@ type Settings struct {
 	ExternalShell bool   `yaml:"external_shell,omitempty"`
 	GitIdentity   bool   `yaml:"git_identity,omitempty"`
 	Native        bool   `yaml:"native,omitempty"`
+	Mise          bool   `yaml:"mise,omitempty"`
 	DefaultUser   string `yaml:"default_user,omitempty"`
 }
 
