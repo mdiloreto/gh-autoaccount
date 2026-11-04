@@ -76,6 +76,49 @@ func TestFreshSetupIgnoresShimDirOnProcessPath(t *testing.T) {
 	}
 }
 
+// A shim directory that is on PATH only after another gh (Homebrew, a distro
+// package) does not route plain gh, so setup must still add the PATH block.
+func TestFreshSetupAddsPathBlockWhenShimDirIsShadowed(t *testing.T) {
+	requireNativeSupport(t)
+	for _, tc := range []struct {
+		name                 string
+		shimFirst, symlinked bool
+		wantBlock            bool
+	}{
+		{"shim dir after another gh", false, false, true},
+		{"shim dir already first", true, false, false},
+		{"shim dir first through a symlinked spelling", true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := onboardingHome(t)
+			shimDir := filepath.Join(home, ".local", "bin")
+			if tc.symlinked {
+				if err := os.MkdirAll(shimDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				alias := filepath.Join(t.TempDir(), "home-alias")
+				if err := os.Symlink(home, alias); err != nil {
+					t.Fatal(err)
+				}
+				shimDir = filepath.Join(alias, ".local", "bin")
+			}
+			if tc.shimFirst {
+				t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			} else {
+				t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+shimDir)
+			}
+			captureOnboarding(t, NewSetupCmd().Execute)
+			rc, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(rc), "gh-autoprofile-shims:start"); got != tc.wantBlock {
+				t.Fatalf("PATH block written = %v, want %v:\n%s", got, tc.wantBlock, rc)
+			}
+		})
+	}
+}
+
 func TestLegacyNoticeSuppressedWhereNativeUnsupported(t *testing.T) {
 	old := nativeGHSupported
 	nativeGHSupported = func() bool { return false }
