@@ -167,6 +167,8 @@ func ownerRemotePatterns(host, owner string) []string {
 	return []string{
 		"https://" + h + "/" + o + "/**",
 		"https://*@" + h + "/" + o + "/**",
+		"https://" + h + ":*/" + o + "/**",
+		"https://*@" + h + ":*/" + o + "/**",
 		"git@" + h + ":" + o + "/**",
 		"ssh://git@" + h + "/" + o + "/**",
 		"ssh://git@" + h + ":*/" + o + "/**",

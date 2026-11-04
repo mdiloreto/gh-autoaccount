@@ -58,8 +58,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	cmd.Println()
 
 	if len(diagnostics.ConflictingOwnerPins) > 0 {
-		cmd.Printf("WARN: remotes of this checkout match several owner pins (%s).\n", sanitizeStatusValue(strings.Join(diagnostics.ConflictingOwnerPins, ", ")))
-		cmd.Println("      Credentials follow one remote but Git identity matches every remote URL, so they can disagree.")
+		cmd.Printf("WARN: remotes of this checkout match owner pins (%s) that credentials may not follow.\n", sanitizeStatusValue(strings.Join(diagnostics.ConflictingOwnerPins, ", ")))
+		cmd.Println("      Git identity matches every remote URL but credentials follow one selection, so they can disagree.")
 		cmd.Println()
 	}
 

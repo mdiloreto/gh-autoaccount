@@ -100,8 +100,6 @@ func Hosts(registry *config.PinRegistry) ([]string, error) {
 	return result, nil
 }
 
-// HelperSnapshot records, per host, every global value this package manages in
-// the host's credential section, so rollback restores exactly what existed.
 // OwnerHosts returns the normalized hosts that have an owner pin, the only
 // hosts where useHttpPath is needed.
 func OwnerHosts(registry *config.PinRegistry) ([]string, error) {
@@ -119,6 +117,8 @@ func OwnerHosts(registry *config.PinRegistry) ([]string, error) {
 	return hosts, nil
 }
 
+// HelperSnapshot records, per host, every global value this package manages in
+// the host's credential section, so rollback restores exactly what existed.
 type HelperSnapshot map[string]HostState
 
 // HostState is the managed global configuration of one host section.

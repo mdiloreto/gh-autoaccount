@@ -58,40 +58,49 @@ func TestParseRepoSpec(t *testing.T) {
 }
 
 func TestRepoFlagForms(t *testing.T) {
+	const (
+		none      = repoFlagNone
+		found     = repoFlagFound
+		ambiguous = repoFlagAmbiguous
+	)
 	for _, tc := range []struct {
 		args  []string
 		want  string
-		found bool
+		state repoFlagState
 	}{
-		{[]string{"pr", "list", "-R", "a/b"}, "a/b", true},
-		{[]string{"pr", "list", "--repo", "a/b"}, "a/b", true},
-		{[]string{"pr", "list", "--repo=a/b"}, "a/b", true},
-		{[]string{"pr", "list", "-R=a/b"}, "a/b", true},
-		{[]string{"pr", "list", "-Ra/b"}, "a/b", true},
-		{[]string{"--repo", "https://github.com/a/b"}, "https://github.com/a/b", true},
-		{[]string{"pr", "list", "-R"}, "", true},
+		{[]string{"pr", "list", "-R", "a/b"}, "a/b", found},
+		{[]string{"pr", "list", "--repo", "a/b"}, "a/b", found},
+		{[]string{"pr", "list", "--repo=a/b"}, "a/b", found},
+		{[]string{"pr", "list", "-R=a/b"}, "a/b", found},
+		{[]string{"pr", "list", "-Ra/b"}, "a/b", found},
+		{[]string{"--repo", "https://github.com/a/b"}, "https://github.com/a/b", found},
+		{[]string{"pr", "list", "-R"}, "", found},
 		// A candidate right after another bare flag may be that flag's value.
-		{[]string{"issue", "create", "-t", "-Rwork-org/x", "-b", "body"}, "", false},
-		{[]string{"issue", "create", "--body", "--repo", "work-org/x"}, "", false},
-		{[]string{"issue", "create", "-t", "-R", "work-org/x"}, "", false},
-		{[]string{"issue", "create", "-wR", "work-org/x"}, "", false},
-		{[]string{"issue", "create", "-t", "--repo=work-org/x"}, "", false},
-		{[]string{"issue", "create", "-t", "-R=work-org/x"}, "", false},
-		{[]string{"issue", "create", "title", "--repo=work-org/x"}, "work-org/x", true},
-		{[]string{"issue", "create", "title", "-R=work-org/x"}, "work-org/x", true},
-		{[]string{"--repo=work-org/x", "-t", "title"}, "work-org/x", true},
-		{[]string{"issue", "create", "--title=t", "-R", "work-org/x"}, "work-org/x", true},
-		{[]string{"issue", "create", "-t", "title", "-Rwork-org/x"}, "work-org/x", true},
-		{[]string{"issue", "create", "-t", "-Rbad", "--repo", "work-org/x"}, "", false},
-		{[]string{"-R", "a/b", "-t", "-Rc/d"}, "a/b", true},
-		{[]string{"pr", "list", "--", "-R", "a/b"}, "", false},
-		{[]string{"pr", "list", "--state", "open"}, "", false},
-		{[]string{"api", "--method", "GET"}, "", false},
-		{nil, "", false},
+		{[]string{"issue", "create", "-t", "-Rwork-org/x", "-b", "body"}, "", ambiguous},
+		{[]string{"issue", "create", "--body", "--repo", "work-org/x"}, "", ambiguous},
+		{[]string{"issue", "create", "-t", "-R", "work-org/x"}, "", ambiguous},
+		{[]string{"issue", "create", "-wR", "work-org/x"}, "", ambiguous},
+		{[]string{"issue", "create", "-t", "--repo=work-org/x"}, "", ambiguous},
+		{[]string{"issue", "create", "-t", "-R=work-org/x"}, "", ambiguous},
+		// ...or a real -R after a boolean flag: still unknown.
+		{[]string{"issue", "view", "--web", "-Rother-org/x"}, "", ambiguous},
+		{[]string{"issue", "create", "title", "--repo=work-org/x"}, "work-org/x", found},
+		{[]string{"issue", "create", "title", "-R=work-org/x"}, "work-org/x", found},
+		{[]string{"--repo=work-org/x", "-t", "title"}, "work-org/x", found},
+		{[]string{"issue", "create", "--title=t", "-R", "work-org/x"}, "work-org/x", found},
+		{[]string{"issue", "create", "-t", "title", "-Rwork-org/x"}, "work-org/x", found},
+		{[]string{"issue", "create", "-t", "-Rbad", "--repo", "work-org/x"}, "", ambiguous},
+		// gh uses the last of repeated values, so more than one is unknown.
+		{[]string{"-R", "a/b", "-t", "-Rc/d"}, "", ambiguous},
+		{[]string{"pr", "list", "-R", "a/b", "-R", "c/d"}, "", ambiguous},
+		{[]string{"pr", "list", "--", "-R", "a/b"}, "", none},
+		{[]string{"pr", "list", "--state", "open"}, "", none},
+		{[]string{"api", "--method", "GET"}, "", none},
+		{nil, "", none},
 	} {
-		got, found := repoFlag(tc.args)
-		if got != tc.want || found != tc.found {
-			t.Errorf("repoFlag(%v) = %q, %v; want %q, %v", tc.args, got, found, tc.want, tc.found)
+		got, state := repoFlag(tc.args)
+		if got != tc.want || state != tc.state {
+			t.Errorf("repoFlag(%v) = %q, %v; want %q, %v", tc.args, got, state, tc.want, tc.state)
 		}
 	}
 }
@@ -221,11 +230,18 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		{"GH_REPO beats remote", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "env-org/x", "env-org"},
 		{"clone ignores GH_REPO", RepoQuery{GH: true, Args: args}, "env-org/x", "clone-org"},
 		{"clone target beats remote", RepoQuery{GH: true, Args: args}, "", "clone-org"},
-		{"ambiguous flag is skipped for GH_REPO", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "env-org/x", "env-org"},
-		{"ambiguous flag is skipped for remote", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "", "remote-org"},
+		// An ambiguous -R may be the real target, so weaker sources must not
+		// select a pin for a repository the command may not access.
+		{"ambiguous flag does not fall to GH_REPO", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "env-org/x", ""},
+		{"ambiguous flag does not fall to remote", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "", ""},
+		{"real -R after boolean flag does not fall to remote", RepoQuery{GH: true, Args: []string{"issue", "view", "--web", "-Rother-org/x"}}, "", ""},
+		{"clustered -R does not fall to remote", RepoQuery{GH: true, Args: []string{"repo", "view", "-wR", "other-org/x"}}, "", ""},
+		{"repeated -R does not fall to remote", RepoQuery{GH: true, Args: []string{"pr", "list", "-R", "a/x", "-R", "b/x"}}, "", ""},
 		{"remote last", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "", "remote-org"},
 		{"non-gh command ignores flag, env and clone", RepoQuery{Args: append([]string{"-R", "flag-org/x"}, args...)}, "env-org/x", "remote-org"},
-		{"bare clone target falls to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "bare"}}, "env-org/x", "remote-org"},
+		// A bare REPO resolves under the authenticated account, not the cwd's.
+		{"bare clone target does not fall to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "bare"}}, "env-org/x", ""},
+		{"clone target after -- does not fall to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "--", "clone-org/x"}}, "", ""},
 		{"unparseable flag does not fall through", RepoQuery{GH: true, Args: []string{"-R", "bare"}}, "", ""},
 		{"unparseable GH_REPO does not fall through", RepoQuery{GH: true}, "bare", ""},
 	} {
@@ -431,6 +447,13 @@ func TestRemotesMappingToSeveralOwnerPinsAreReported(t *testing.T) {
 	}
 	runGit(t, repo, "remote", "remove", "upstream")
 	if ctx, err = ResolveContextWithPolicy(repo, Policy{Repo: &RepoQuery{GH: true, Conflicts: true}}); err != nil || ctx.OwnerConflicts != nil {
-		t.Fatalf("single owner reported as conflict: %+v %v", ctx, err)
+		t.Fatalf("single selected owner reported as conflict: %+v %v", ctx, err)
+	}
+	// One owner pin matched by a remote that credentials do not follow:
+	// identity uses work-org while gh selects the unpinned upstream.
+	runGit(t, repo, "remote", "add", "upstream", "https://github.com/someone/x")
+	ctx, err = ResolveContextWithPolicy(repo, Policy{Repo: &RepoQuery{GH: true, Conflicts: true}})
+	if err != nil || ctx.SelectionSource == "owner" || strings.Join(ctx.OwnerConflicts, ",") != "github.com/work-org" {
+		t.Fatalf("unselected owner not reported: %+v %v", ctx, err)
 	}
 }

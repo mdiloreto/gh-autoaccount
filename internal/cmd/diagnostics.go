@@ -75,7 +75,8 @@ type statusDiagnostics struct {
 	SelectedUser    string          `json:"selected_user"`
 	SelectionSource string          `json:"selection_source"`
 	Pin             *pinDiagnostics `json:"pin"`
-	// ConflictingOwnerPins lists owner pins matched by more than one remote.
+	// ConflictingOwnerPins lists owner pins matched by remotes whose Git identity
+	// can disagree with the selected credentials.
 	ConflictingOwnerPins []string                  `json:"conflicting_owner_pins,omitempty"`
 	Environment          environmentDiagnostics    `json:"environment"`
 	Authentication       authenticationDiagnostics `json:"authentication"`

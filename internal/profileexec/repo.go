@@ -18,7 +18,8 @@ type RepoQuery struct {
 	// `repo clone` target take precedence over the working directory.
 	GH   bool
 	Args []string // gh arguments, without the executable
-	// Conflicts also reports owner pins matched by more than one remote.
+	// Conflicts also reports owner pins whose Git identity can disagree with
+	// the selected credentials.
 	Conflicts bool
 }
 
@@ -53,7 +54,7 @@ func selectPin(registry *config.PinRegistry, dir string, query *RepoQuery) (sele
 			}
 		}
 		if query.Conflicts {
-			sel.conflicts = remotes.conflicts(registry)
+			sel.conflicts = remotes.conflicts(registry, sel.pin)
 		}
 	}
 	if sel.pin == nil {
@@ -69,22 +70,27 @@ func selectPin(registry *config.PinRegistry, dir string, query *RepoQuery) (sele
 }
 
 // detectRepo prefers sources that name the repository explicitly and reads
-// the working directory's remotes, at most one git subprocess, last.
+// the working directory's remotes, at most one git subprocess, last. When an
+// explicit source is present but cannot be read unambiguously, it reports no
+// repository rather than consulting weaker sources: gh may access a repository
+// other than the remotes' or GH_REPO's, and a pin for those must not be chosen.
 func detectRepo(query *RepoQuery, remotes *remoteCache) (RepoRef, bool) {
 	defaultHost := defaultRepoHost()
 	if query.GH {
 		if isRepoClone(query.Args) {
-			// gh ignores -R and GH_REPO when cloning.
-			if spec, found := cloneTarget(query.Args); found {
-				if ref, ok := parseRepoSpec(spec, defaultHost); ok {
-					return ref, true
-				}
+			// gh ignores -R and GH_REPO when cloning, and a bare REPO resolves
+			// under the authenticated account, so it names no owner.
+			spec, found := cloneTarget(query.Args)
+			if !found {
+				return RepoRef{}, false
 			}
-			// A bare REPO has no owner.
-			return remotes.selected()
-		}
-		if spec, found := repoFlag(query.Args); found {
 			return parseRepoSpec(spec, defaultHost)
+		}
+		switch spec, state := repoFlag(query.Args); state {
+		case repoFlagFound:
+			return parseRepoSpec(spec, defaultHost)
+		case repoFlagAmbiguous:
+			return RepoRef{}, false
 		}
 		if spec := os.Getenv("GH_REPO"); spec != "" {
 			return parseRepoSpec(spec, defaultHost)
@@ -100,33 +106,55 @@ func defaultRepoHost() string {
 	return "github.com"
 }
 
+type repoFlagState int
+
+const (
+	repoFlagNone repoFlagState = iota
+	repoFlagFound
+	repoFlagAmbiguous
+)
+
 // repoFlag finds gh's -R/--repo value. gh's flag table is not known here, and a
 // value-taking flag consumes the next token whatever it looks like, so any
 // candidate (-R x, -Rx, -R=x, --repo x, --repo=x) right after another bare flag
-// might be that flag's value (`-t --repo=x`) and never selects. A candidate at
-// the start or right after a non-flag token is unambiguous in every form.
-func repoFlag(args []string) (string, bool) {
-	for i, arg := range args {
+// might be that flag's value (`-t --repo=x`), or a real -R after a boolean flag.
+// Either way the target is unknown, so the candidate is ambiguous. More than one
+// candidate is ambiguous too: gh uses the last value given. Only a single
+// candidate at the start or right after a non-flag token is found.
+func repoFlag(args []string) (string, repoFlagState) {
+	spec, state := "", repoFlagNone
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
-			return "", false
+			break
 		}
-		ambiguous := i > 0 && isBareFlag(args[i-1])
+		afterBareFlag := i > 0 && isBareFlag(args[i-1])
+		var value string
 		switch {
-		case ambiguous:
 		case strings.HasPrefix(arg, "--repo="):
-			return strings.TrimPrefix(arg, "--repo="), true
+			value = strings.TrimPrefix(arg, "--repo=")
 		case strings.HasPrefix(arg, "-R="):
-			return strings.TrimPrefix(arg, "-R="), true
+			value = strings.TrimPrefix(arg, "-R=")
 		case arg == "-R" || arg == "--repo":
 			if i+1 < len(args) {
-				return args[i+1], true
+				value = args[i+1]
 			}
-			return "", true
+			i++ // the next token is this flag's value
 		case strings.HasPrefix(arg, "-R") && !strings.HasPrefix(arg, "--"):
-			return strings.TrimPrefix(arg, "-R"), true
+			value = strings.TrimPrefix(arg, "-R")
+		case len(arg) > 2 && arg[0] == '-' && arg[1] != '-' && strings.ContainsRune(arg, 'R'):
+			// A shorthand cluster such as -wR: whether R is the repo flag
+			// depends on the other letters' arity, which is unknown here.
+			return "", repoFlagAmbiguous
+		default:
+			continue
 		}
+		if afterBareFlag || state != repoFlagNone {
+			return "", repoFlagAmbiguous
+		}
+		spec, state = value, repoFlagFound
 	}
-	return "", false
+	return spec, state
 }
 
 func isBareFlag(arg string) bool {
@@ -283,18 +311,29 @@ func (c *remoteCache) selected() (RepoRef, bool) {
 	return RepoRef{}, false
 }
 
-// conflicts lists the owner pins matched by any remote when there is more than
-// one: Git identity matches every remote while credentials follow one.
-func (c *remoteCache) conflicts(registry *config.PinRegistry) []string {
+// conflicts lists the owner pins matched by any remote when Git identity and
+// credentials can disagree: identity matches every remote while credentials
+// follow the selected pin. That is the case with several matched owner pins, or
+// with one that is not the selected pin.
+func (c *remoteCache) conflicts(registry *config.PinRegistry, selected *config.Pin) []string {
 	c.load()
-	matched := map[string]bool{}
+	matched := map[string]*config.Pin{}
 	for _, raw := range c.urls {
-		if ref, ok := parseRemoteURL(raw); ok && registry.FindOwnerPin(ref.Host, ref.Owner) != nil {
-			matched[ref.Host+"/"+strings.ToLower(ref.Owner)] = true
+		if ref, ok := parseRemoteURL(raw); ok {
+			if pin := registry.FindOwnerPin(ref.Host, ref.Owner); pin != nil {
+				matched[ref.Host+"/"+strings.ToLower(ref.Owner)] = pin
+			}
 		}
 	}
-	if len(matched) < 2 {
+	if len(matched) == 0 {
 		return nil
+	}
+	if len(matched) == 1 {
+		for _, pin := range matched {
+			if pin == selected {
+				return nil
+			}
+		}
 	}
 	owners := make([]string, 0, len(matched))
 	for owner := range matched {

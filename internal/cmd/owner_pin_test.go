@@ -348,7 +348,7 @@ func TestShimSelectsOwnerPinFromEverySource(t *testing.T) {
 		{"repo clone url with destination", unpinned, nil, []string{"repo", "clone", "https://github.com/work-org/x", "dest", "--", "--depth=1"}, "tok-bob"},
 		{"repo clone beats cwd dir pin", work, nil, []string{"repo", "clone", "work-org/x"}, "tok-bob"},
 		{"repo clone elsewhere keeps dir pin", work, nil, []string{"repo", "clone", "other-org/x"}, "tok-carol"},
-		{"repo clone bare name uses the remote", sshRemote, nil, []string{"repo", "clone", "x"}, "tok-bob"},
+		{"repo clone bare name does not use the remote", sshRemote, nil, []string{"repo", "clone", "x"}, "tok-alice"},
 		{"repo clone ignores GH_REPO", unpinned, map[string]string{"GH_REPO": "work-org/x"}, []string{"repo", "clone", "other-org/x"}, "tok-alice"},
 		{"value of another flag is not -R", sshRemoteOther, nil, []string{"issue", "create", "-t", "-Rwork-org/x", "-b", "body"}, "tok-alice"},
 		{"value of --body is not --repo", sshRemoteOther, nil, []string{"issue", "create", "--body", "--repo", "work-org/x"}, "tok-alice"},
@@ -356,7 +356,9 @@ func TestShimSelectsOwnerPinFromEverySource(t *testing.T) {
 		{"-R= after a flag is ambiguous", sshRemoteOther, nil, []string{"issue", "create", "-t", "-R=work-org/x"}, "tok-alice"},
 		{"--repo= after a positional is explicit", sshRemoteOther, nil, []string{"issue", "create", "title", "--repo=work-org/x"}, "tok-bob"},
 		{"-R after a non-flag token is explicit", sshRemoteOther, nil, []string{"issue", "create", "title", "-R", "work-org/x"}, "tok-bob"},
-		{"ambiguous -R falls to GH_REPO", sshRemoteOther, map[string]string{"GH_REPO": "work-org/x"}, []string{"issue", "create", "-t", "-Rother-org/x"}, "tok-bob"},
+		{"ambiguous -R does not fall to GH_REPO", sshRemoteOther, map[string]string{"GH_REPO": "work-org/x"}, []string{"issue", "create", "-t", "-Rother-org/x"}, "tok-alice"},
+		{"real -R after a boolean flag does not fall to the remote", sshRemote, nil, []string{"issue", "view", "--web", "-Rother-org/x"}, "tok-alice"},
+		{"repeated -R does not fall to the remote", sshRemote, nil, []string{"pr", "list", "-R", "other-org/x", "-R", "other-org/y"}, "tok-alice"},
 		{"upstream outranks origin", upstreamFirst, nil, []string{"pr", "list"}, "tok-alice"},
 		{"empty host never matches", unpinned, nil, []string{"pr", "list", "-R", "/work-org/x"}, "tok-alice"},
 		{"scp remote", sshRemote, nil, []string{"pr", "list"}, "tok-bob"},
@@ -607,7 +609,7 @@ func TestStatusWarnsWhenRemotesMatchSeveralOwnerPins(t *testing.T) {
 	buf.Reset()
 	command.SetOut(&buf)
 	command.SetArgs([]string{"--dir", repo})
-	if err := command.Execute(); err != nil || !strings.Contains(buf.String(), "WARN: remotes of this checkout match several owner pins") {
+	if err := command.Execute(); err != nil || !strings.Contains(buf.String(), "WARN: remotes of this checkout match owner pins (github.com/other-org, github.com/work-org) that credentials may not follow") {
 		t.Fatalf("text: %s %v", buf.String(), err)
 	}
 	gitIn(t, repo, "remote", "remove", "upstream")
@@ -616,6 +618,19 @@ func TestStatusWarnsWhenRemotesMatchSeveralOwnerPins(t *testing.T) {
 	command.SetOut(&buf)
 	command.SetArgs([]string{"--json", "--dir", repo})
 	if err := command.Execute(); err != nil || strings.Contains(buf.String(), "conflicting_owner_pins") {
-		t.Fatalf("single owner flagged: %s %v", buf.String(), err)
+		t.Fatalf("single selected owner flagged: %s %v", buf.String(), err)
+	}
+	// gh follows the unpinned upstream while identity still matches work-org.
+	gitIn(t, repo, "remote", "add", "upstream", "https://github.com/someone/x.git")
+	command = NewStatusCmd()
+	buf.Reset()
+	command.SetOut(&buf)
+	command.SetArgs([]string{"--json", "--dir", repo})
+	got = statusDiagnostics{}
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil || strings.Join(got.ConflictingOwnerPins, ",") != "github.com/work-org" {
+		t.Fatalf("unselected owner not flagged: %s %v", buf.String(), err)
 	}
 }

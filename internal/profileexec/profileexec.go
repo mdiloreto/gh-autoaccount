@@ -35,7 +35,8 @@ type Context struct {
 	SelectedHost    string
 	Token           string
 	TokenSource     string
-	// OwnerConflicts lists owner pins matched by several remotes, when asked for.
+	// OwnerConflicts lists owner pins whose Git identity can disagree with the
+	// selected credentials, when asked for.
 	OwnerConflicts []string
 }
 

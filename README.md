@@ -469,18 +469,22 @@ The owner comes from the Git credential request path, gh's `-R/--repo`,
 `GH_REPO`, the target of `gh repo clone` (which ignores both `-R` and `GH_REPO`),
 then the working directory's remote: the one marked `gh-resolved`, else
 `upstream`, `github`, `origin` (gh's order), else the only remote. gh's flag table
-is not known here, so any `-R`/`--repo` form right after another flag could be that
-flag's value and never selects, `=` or not: put it before other flags or right after
-a positional argument. `exec
---require-pin` accepts an owner or a directory pin.
+is not known here, so an `-R`/`--repo` right after another flag (`=` or not) could
+be that flag's value, and a repeated `-R` is resolved by gh to its last value. In
+those cases, and for an unparseable `-R`/`GH_REPO` or a bare `gh repo clone REPO`,
+the target is unknown: owner routing is skipped for that command and the
+directory pin or default applies. Put `-R` before other flags or right after a
+positional argument to route by it. `exec --require-pin` accepts an owner or a
+directory pin.
 
 With `setup --git-identity`, `git_email`/`git_name` on an owner pin apply to
-repositories with a remote URL (https with or without userinfo, scp-style or
-ssh with or without a port) under that owner, and win over directory identity;
+repositories with a remote URL (https or ssh, with or without userinfo or a
+port, or scp-style) under that owner, and win over directory identity;
 this needs Git 2.36 or newer, and setup and doctor refuse or flag older Git.
 Known limitation: Git can only match `remote.*.url`, so identity matches every
-remote while credentials follow the one remote above. A checkout whose remotes
-map to several owner pins can therefore disagree, and `status` warns about it
+remote while credentials follow the one selection above. A checkout with a
+remote under an owner pin that credentials do not select (another remote wins,
+or several owner pins match) can therefore disagree, and `status` warns about it
 (`conflicting_owner_pins` in `--json`).
 
 For the Git path, setup and pin also set `credential.https://<host>.useHttpPath=true`
