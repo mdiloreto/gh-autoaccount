@@ -226,7 +226,7 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		env   string
 		want  string
 	}{
-		{"flag beats everything", RepoQuery{GH: true, Args: append([]string{"-R", "flag-org/x"}, args...)}, "env-org/x", "flag-org"},
+		{"flag beats everything", RepoQuery{GH: true, Args: []string{"-R", "flag-org/x", "pr", "list"}}, "env-org/x", "flag-org"},
 		{"GH_REPO beats remote", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "env-org/x", "env-org"},
 		{"clone ignores GH_REPO", RepoQuery{GH: true, Args: args}, "env-org/x", "clone-org"},
 		{"clone target beats remote", RepoQuery{GH: true, Args: args}, "", "clone-org"},
@@ -239,6 +239,17 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		{"repeated -R does not fall to remote", RepoQuery{GH: true, Args: []string{"pr", "list", "-R", "a/x", "-R", "b/x"}}, "", ""},
 		{"remote last", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "", "remote-org"},
 		{"non-gh command ignores flag, env and clone", RepoQuery{Args: append([]string{"-R", "flag-org/x"}, args...)}, "env-org/x", "remote-org"},
+		// A positional repository or API path naming another owner may be
+		// what gh accesses, so neither GH_REPO nor the remote may select.
+		{"positional repo beats GH_REPO", RepoQuery{GH: true, Args: []string{"repo", "view", "other-org/x"}}, "env-org/x", ""},
+		{"positional repo beats remote", RepoQuery{GH: true, Args: []string{"repo", "view", "other-org/x"}}, "", ""},
+		{"url argument beats remote", RepoQuery{GH: true, Args: []string{"pr", "view", "https://github.com/other-org/x/pull/1"}}, "", ""},
+		{"api path beats remote", RepoQuery{GH: true, Args: []string{"api", "repos/other-org/x/pulls"}}, "", ""},
+		{"api path with slash beats GH_REPO", RepoQuery{GH: true, Args: []string{"api", "/repos/other-org/x"}}, "env-org/x", ""},
+		{"positional beats -R", RepoQuery{GH: true, Args: []string{"-R", "flag-org/x", "pr", "view", "https://github.com/other-org/x/pull/1"}}, "", ""},
+		{"same-owner mention keeps the remote", RepoQuery{GH: true, Args: []string{"api", "repos/remote-org/y"}}, "", "remote-org"},
+		{"same-owner url keeps GH_REPO", RepoQuery{GH: true, Args: []string{"pr", "view", "https://github.com/ENV-ORG/x/pull/2"}}, "env-org/x", "env-org"},
+		{"non-repo positional keeps the remote", RepoQuery{GH: true, Args: []string{"pr", "view", "12"}}, "", "remote-org"},
 		// A bare REPO resolves under the authenticated account, not the cwd's.
 		{"bare clone target does not fall to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "bare"}}, "env-org/x", ""},
 		{"clone target after -- does not fall to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "--", "clone-org/x"}}, "", ""},

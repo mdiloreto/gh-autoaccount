@@ -471,9 +471,12 @@ then the working directory's remote: the one marked `gh-resolved`, else
 `upstream`, `github`, `origin` (gh's order), else the only remote. gh's flag table
 is not known here, so an `-R`/`--repo` right after another flag (`=` or not) could
 be that flag's value, and a repeated `-R` is resolved by gh to its last value. In
-those cases, and for an unparseable `-R`/`GH_REPO` or a bare `gh repo clone REPO`,
-the target is unknown: owner routing is skipped for that command and the
-directory pin or default applies. Put `-R` before other flags or right after a
+those cases, for an unparseable `-R`/`GH_REPO` or a bare `gh repo clone REPO`, and
+when an argument names a repository under another owner (a positional
+`OWNER/REPO` or URL such as `gh repo view other-org/x`, or an `api` path under
+`repos/OWNER/REPO`, including flag values that merely look like one), the target
+is unknown: owner routing is skipped for that command and the directory pin or
+default applies. Put `-R` before other flags or right after a
 positional argument to route by it. `exec --require-pin` accepts an owner or a
 directory pin.
 

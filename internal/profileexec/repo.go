@@ -86,17 +86,66 @@ func detectRepo(query *RepoQuery, remotes *remoteCache) (RepoRef, bool) {
 			}
 			return parseRepoSpec(spec, defaultHost)
 		}
-		switch spec, state := repoFlag(query.Args); state {
-		case repoFlagFound:
-			return parseRepoSpec(spec, defaultHost)
-		case repoFlagAmbiguous:
+		var ref RepoRef
+		var ok bool
+		switch spec, state := repoFlag(query.Args); {
+		case state == repoFlagAmbiguous:
+			return RepoRef{}, false
+		case state == repoFlagFound:
+			ref, ok = parseRepoSpec(spec, defaultHost)
+		case os.Getenv("GH_REPO") != "":
+			ref, ok = parseRepoSpec(os.Getenv("GH_REPO"), defaultHost)
+		default:
+			ref, ok = remotes.selected()
+		}
+		if ok && mentionsOtherRepo(query.Args, ref, defaultHost) {
 			return RepoRef{}, false
 		}
-		if spec := os.Getenv("GH_REPO"); spec != "" {
-			return parseRepoSpec(spec, defaultHost)
-		}
+		return ref, ok
 	}
 	return remotes.selected()
+}
+
+// mentionsOtherRepo reports whether a non-flag argument names a repository
+// other than ref: a positional OWNER/REPO, HOST/OWNER/REPO or URL
+// (`gh repo view other-org/x`, `gh pr view <url>`) or an API path under
+// repos/OWNER/REPO. gh may access that repository instead, and the command
+// grammar is not known here, so any such mention makes the target unknown.
+// A flag value that merely looks like one (`--title fix/x`) also counts; that
+// only skips owner routing.
+func mentionsOtherRepo(args []string, ref RepoRef, defaultHost string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-R" || arg == "--repo" {
+			i++ // the selected repository itself
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		// API paths first: repos/OWNER/REPO would otherwise read as HOST/OWNER/REPO.
+		mention, ok := apiRepoPath(arg, defaultHost)
+		if !ok {
+			mention, ok = parseRepoSpec(arg, defaultHost)
+		}
+		if ok && (mention.Host != ref.Host || !strings.EqualFold(mention.Owner, ref.Owner)) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiRepoPath reads OWNER from a `gh api` path such as repos/OWNER/REPO/pulls.
+func apiRepoPath(arg, defaultHost string) (RepoRef, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimPrefix(arg, "/"), "repos/")
+	if !ok {
+		return RepoRef{}, false
+	}
+	segments := strings.SplitN(rest, "/", 3)
+	if len(segments) < 2 {
+		return RepoRef{}, false
+	}
+	return newRepoRef(defaultHost, segments[0], strings.SplitN(segments[1], "?", 2)[0])
 }
 
 func defaultRepoHost() string {
