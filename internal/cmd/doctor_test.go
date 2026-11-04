@@ -20,7 +20,7 @@ func TestDoctorNativeRequiredIntegrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureOnboarding(t, NewDoctorCmd().Execute)
-	for _, want := range []string{"routing mode: native", "direnv is optional", "WARN required native gh proxy", "WARN required git credential helper missing", "WARN required git credential helper not configured", "external PATH integration not verified", "runtime real gh:"} {
+	for _, want := range []string{"WARN required native gh proxy", "WARN required git credential helper missing", "WARN required git credential helper not configured", "external PATH integration not verified", "runtime real gh:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q: %s", want, out)
 		}
@@ -135,7 +135,7 @@ func TestDoctorReportsAndMigrationRepairsMissingHelperRealGH(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsMissingHelperRealGHInLegacyMode(t *testing.T) {
+func TestDoctorReportsMissingHelperRealGH(t *testing.T) {
 	home := onboardingHome(t)
 	if err := config.SaveSettings(config.Settings{}); err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestDoctorReportsMissingHelperRealGHInLegacyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureOnboarding(t, NewDoctorCmd().Execute)
-	if !strings.Contains(out, "routing mode: legacy") || !strings.Contains(out, "WARN git credential helper gh is missing or not executable: "+removed) {
+	if !strings.Contains(out, "WARN git credential helper gh is missing or not executable: "+removed) {
 		t.Fatal(out)
 	}
 }

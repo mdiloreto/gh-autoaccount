@@ -64,45 +64,45 @@ func TestStatusJSONDirectorySelection(t *testing.T) {
 	}
 }
 
-func TestStatusNativeDoesNotRequireDirenvMarker(t *testing.T) {
+func TestStatusTextReportsNativeRoutingWithoutDirenvLines(t *testing.T) {
 	home := diagnosticsHome(t)
 	forbidDiagnosticHTTP(t)
 	if err := config.SaveSettings(config.Settings{Native: true, ExternalShell: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", Mode: config.ModeWrapper}}}); err != nil {
-		t.Fatal(err)
-	}
-	out, _, err := executeDiagnostics("status", "--dir", home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "routing mode:         native") || !strings.Contains(out, "without direnv markers") || !strings.Contains(out, "shim PATH:            external, not verified") || strings.Contains(out, "Is direnv loaded?") {
-		t.Fatal(out)
-	}
-	assertDiagnosticRedacted(t, out)
-	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", Mode: config.ModeExport}}}); err != nil {
-		t.Fatal(err)
-	}
-	out, _, err = executeDiagnostics("status", "--dir", home)
-	if err != nil || !strings.Contains(out, "Is direnv loaded?") {
-		t.Fatalf("export warning lost: %s %v", out, err)
+	// An unmigrated export pin must not bring back direnv diagnostics.
+	for _, mode := range []config.PinMode{config.ModeWrapper, config.ModeExport} {
+		if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", Mode: mode}}}); err != nil {
+			t.Fatal(err)
+		}
+		out, _, err := executeDiagnostics("status", "--dir", home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "Native routing selects this pin") || !strings.Contains(out, "shim PATH:            external, not verified") {
+			t.Fatalf("mode %q: native routing not reported:\n%s", mode, out)
+		}
+		for _, absent := range []string{"routing mode", "direnv", "GH_AUTOPROFILE_", "token mode"} {
+			if strings.Contains(out, absent) {
+				t.Fatalf("mode %q: retired diagnostic %q present:\n%s", mode, absent, out)
+			}
+		}
+		assertDiagnosticRedacted(t, out)
 	}
 }
 
 func TestStatusAuthenticationPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		name, marker, markerHost, optIn, ghToken, wantSource string
-		mode                                                 config.PinMode
+		name, marker, markerHost, ghToken string
+		mode                              config.PinMode
 	}{
-		{"wrapper ignores ambient", "alice", "github.com", "1", diagnosticGHToken, "keyring", config.ModeWrapper},
-		{"export ignores ambient by default", "alice", "github.com", "", diagnosticGHToken, "keyring", config.ModeExport},
-		{"export opt-in GH_TOKEN", "alice", "github.com", "1", diagnosticGHToken, "GH_TOKEN", config.ModeExport},
-		{"export opt-in GITHUB_TOKEN", "alice", "github.com", "1", "", "GITHUB_TOKEN", config.ModeExport},
-		{"export mismatched marker", "other", "github.com", "1", diagnosticGHToken, "keyring", config.ModeExport},
-		{"export partial user marker", "alice", "", "1", diagnosticGHToken, "keyring", config.ModeExport},
-		{"export partial host marker", "", "github.com", "1", diagnosticGHToken, "keyring", config.ModeExport},
-		{"export no marker", "", "", "1", diagnosticGHToken, "keyring", config.ModeExport},
+		{"wrapper ignores ambient", "alice", "github.com", diagnosticGHToken, config.ModeWrapper},
+		{"export ignores ambient GH_TOKEN", "alice", "github.com", diagnosticGHToken, config.ModeExport},
+		{"export ignores ambient GITHUB_TOKEN", "alice", "github.com", "", config.ModeExport},
+		{"export mismatched marker", "other", "github.com", diagnosticGHToken, config.ModeExport},
+		{"export partial user marker", "alice", "", diagnosticGHToken, config.ModeExport},
+		{"export partial host marker", "", "github.com", diagnosticGHToken, config.ModeExport},
+		{"export no marker", "", "", diagnosticGHToken, config.ModeExport},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := diagnosticsHome(t)
@@ -110,7 +110,6 @@ func TestStatusAuthenticationPolicy(t *testing.T) {
 			t.Setenv("GH_AUTOPROFILE_USER", tc.marker)
 			t.Setenv("GH_AUTOPROFILE_HOST", tc.markerHost)
 			t.Setenv("GH_AUTOPROFILE_MODE", string(tc.mode))
-			t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", tc.optIn)
 			t.Setenv("GH_TOKEN", tc.ghToken)
 			t.Setenv("GITHUB_TOKEN", diagnosticGitHubToken)
 			if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", Mode: tc.mode}}}); err != nil {
@@ -123,7 +122,7 @@ func TestStatusAuthenticationPolicy(t *testing.T) {
 			assertDiagnosticRedacted(t, stdout+stderr)
 			var status statusDiagnostics
 			decodeDiagnosticJSON(t, stdout, &status)
-			want := authenticationDiagnostics{Selected: true, Source: tc.wantSource, CredentialAvailable: true}
+			want := authenticationDiagnostics{Selected: true, Source: "keyring", CredentialAvailable: true}
 			if !reflect.DeepEqual(status.Authentication, want) {
 				t.Fatalf("wrong authentication policy: %+v", status.Authentication)
 			}
@@ -190,7 +189,6 @@ func TestStatusAmbientHostMarkerMismatch(t *testing.T) {
 	home := diagnosticsHome(t)
 	t.Setenv("GH_AUTOPROFILE_USER", "alice")
 	t.Setenv("GH_AUTOPROFILE_HOST", "other.example")
-	t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", "1")
 	t.Setenv("GH_TOKEN", "ambient-token")
 	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", Mode: config.ModeExport}}}); err != nil {
 		t.Fatal(err)

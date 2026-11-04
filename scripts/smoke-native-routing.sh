@@ -213,108 +213,38 @@ chmod 755 "$root/attacker/gh"
 helper=$XDG_CONFIG_HOME/gh-autoprofile/git-credential-helper
 fill=$(cd "$root/work"; printf 'protocol=https\nhost=github.com\n\n' | PATH="$root/attacker:$PATH" GH_PATH="$root/attacker/gh" GH_AUTOPROFILE_REAL_GH="$root/attacker/gh" "$helper" get)
 [[ $fill == *'password=dummy-alice'* ]] || fail 'installed helper did not pin targets'
-"$candidate" setup --native=false --no-shell-rc > /dev/null
-result=$(cd "$root/work"; PATH="$root/attacker:$PATH" GH_PATH="$root/attacker/gh" GH_AUTOPROFILE_REAL_GH="$root/attacker/gh" "$shim" observe)
-[[ $result == 'dummy-alice|||||0' ]] || fail "legacy shim did not pin targets: $result"
-lib=$XDG_CONFIG_HOME/direnv/lib/gh-autoprofile.sh
-result=$(cd "$root/work"; PATH="$root/attacker:$PATH" GH_PATH="$root/attacker/gh" GH_AUTOPROFILE_REAL_GH="$root/attacker/gh" LIB="$lib" /bin/bash -c 'log_error() { :; }; log_status() { :; }; source "$LIB"; use_gh_autoprofile alice; printf "%s|%s" "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_HOST"')
-[[ $result == 'alice|github.com' && ! -e $root/attacked ]] || fail 'rendered library used attacker target'
-"$candidate" setup --native --no-shell-rc > /dev/null
-printf '%s\n' 'PASS: installed helper, legacy shim and rendered library resist poisoned routing'
+printf '%s\n' 'PASS: installed helper resists poisoned routing'
 
-# Each shell sources the installed hook through native -> legacy -> native transitions.
-cat > "$root/reload.sh" <<'RELOAD'
-set -e
-hook=$XDG_CONFIG_HOME/gh-autoprofile/hook.sh
-gh() { :; }
-git() { :; }
-source "$hook"
-source "$hook"
-if type gh | grep -q 'function'; then exit 1; fi
-if type git | grep -q 'function'; then exit 1; fi
-"$CANDIDATE" setup --native=false --no-shell-rc > /dev/null
-source "$hook"
-source "$hook"
-[ ! -L "$HOME/.local/bin/gh" ]
-GH_AUTOPROFILE_USER=alice
-export GH_AUTOPROFILE_USER
-_gh_autoprofile_hook
-type gh | grep -q 'function'
-type git | grep -q 'function'
-"$CANDIDATE" setup --migrate > /dev/null
-[ ! -L "$HOME/.local/bin/gh" ]
-cp "$XDG_CONFIG_HOME/gh-autoprofile/settings.yml" "$SMOKE_ROOT/reload-settings.before"
-cp "$HOME/.local/bin/gh" "$SMOKE_ROOT/reload-shim.before"
-for dir in "$SMOKE_ROOT/work" "$SMOKE_ROOT/work/nested" "$SMOKE_ROOT/missing" "$SMOKE_ROOT/emu" "$SMOKE_ROOT/enterprise"; do
-  cp "$dir/.envrc" "$dir/.envrc.reload-managed"
-done
-: > "$SMOKE_ROOT/direnv-deny.log"
-if "$CANDIDATE" setup --native --no-shell-rc > "$SMOKE_ROOT/reload-refusal.log" 2>&1; then exit 1; fi
-grep -q 'direnv deny' "$SMOKE_ROOT/reload-refusal.log"
-cmp -s "$XDG_CONFIG_HOME/gh-autoprofile/settings.yml" "$SMOKE_ROOT/reload-settings.before"
-[ ! -L "$HOME/.local/bin/gh" ]
-cmp -s "$HOME/.local/bin/gh" "$SMOKE_ROOT/reload-shim.before"
-[ ! -s "$SMOKE_ROOT/direnv-deny.log" ]
-for dir in "$SMOKE_ROOT/work" "$SMOKE_ROOT/work/nested" "$SMOKE_ROOT/missing" "$SMOKE_ROOT/emu" "$SMOKE_ROOT/enterprise"; do
-  cmp -s "$dir/.envrc" "$dir/.envrc.reload-managed"
-  direnv deny "$dir/.envrc"
-  awk '$0 == "# gh-autoprofile:start" { managed=1; next } $0 == "# gh-autoprofile:end" { managed=0; next } !managed { print }' "$dir/.envrc" > "$dir/.envrc.manual"
-  mv "$dir/.envrc.manual" "$dir/.envrc"
-done
-"$CANDIDATE" setup --native --no-shell-rc > /dev/null
-source "$hook"
-source "$hook"
-[ "$HOME/.local/bin/gh" -ef "$CANDIDATE" ]
-if type gh | grep -q 'function'; then exit 1; fi
-if type git | grep -q 'function'; then exit 1; fi
-if [ -n "${BASH_VERSION-}" ]; then
-  case "${PROMPT_COMMAND-}" in *_gh_autoprofile*_*_gh_autoprofile*) exit 1;; esac
-else
-  count=0
-  for item in "${precmd_functions[@]}"; do
-    case "$item" in *gh_autoprofile*) count=$((count+1));; esac
-  done
-  [ "$count" -le 1 ]
-fi
-RELOAD
-export CANDIDATE="$candidate"
-bash --noprofile --norc "$root/reload.sh" || fail 'bash reload or mode migration'
-if command -v zsh > /dev/null; then
-  zsh -f "$root/reload.sh" || fail 'zsh reload or mode migration'
-else
-  printf '%s\n' 'SKIP: zsh not installed'
-fi
-for dir in "$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise"; do
-  cp "$dir/.envrc.reload-managed" "$dir/.envrc"
-done
-for dir in "$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise"; do
-  grep -Fxq '# gh-autoprofile:start' "$dir/.envrc" || fail "legacy managed block missing: $dir"
+# Setup removes what the retired direnv modes left behind and keeps user bytes.
+dirs=("$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise")
+for dir in "${dirs[@]}"; do
+  printf '# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\n' > "$dir/.envrc"
 done
 printf '  # unmanaged fixture\n\nexport EXAMPLE=value\n' > "$root/expected-unmanaged"
 cat "$root/expected-unmanaged" >> "$root/work/.envrc"
+lib=$XDG_CONFIG_HOME/direnv/lib/gh-autoprofile.sh
+hook=$XDG_CONFIG_HOME/gh-autoprofile/hook.sh
+mkdir -p "$(dirname "$lib")"
+printf '#!/usr/bin/env bash\n# gh-autoprofile direnv shell library\n' > "$lib"
+printf '#!/usr/bin/env bash\n# gh-autoprofile shell hook\n' > "$hook"
 : > "$root/direnv-deny.log"
 : > "$root/direnv-unexpected.log"
-for dir in "$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise"; do
-  cp "$dir/.envrc" "$dir/.envrc.before"
+"$candidate" setup --migrate > "$root/migrate.log" 2>&1 || { cat "$root/migrate.log" >&2; fail 'legacy cleanup migration failed'; }
+[[ -L $shim && $shim -ef $candidate ]] || fail 'migrate did not keep the native proxy'
+cmp -s "$root/expected-unmanaged" "$root/work/.envrc" || fail 'cleanup did not preserve unmanaged bytes'
+for dir in "${dirs[@]:1}"; do
+  [[ ! -e $dir/.envrc ]] || fail "cleanup left a managed-only envrc: $dir"
 done
-if "$candidate" setup --migrate > "$root/manual.log" 2>&1; then fail 'managed migration should require manual cleanup'; fi
-grep -q 'direnv deny' "$root/manual.log" || fail 'manual cleanup guidance missing'
-[[ ! -s $root/direnv-deny.log ]] || fail 'migration automatically denied envrc'
-for dir in "$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise"; do
-  cmp -s "$dir/.envrc.before" "$dir/.envrc" || fail "refusal changed $dir/.envrc"
-  direnv deny "$dir/.envrc"
-  awk '$0 == "# gh-autoprofile:start" { managed=1; next } $0 == "# gh-autoprofile:end" { managed=0; next } !managed { print }' "$dir/.envrc" > "$dir/.envrc.manual"
-  mv "$dir/.envrc.manual" "$dir/.envrc"
-done
-"$candidate" setup --migrate > /dev/null
-[[ -L $shim && $shim -ef $candidate ]] || fail 'migrate did not preserve native mode'
-cmp -s "$root/expected-unmanaged" "$root/work/.envrc" || fail 'migration did not preserve unmanaged bytes'
-[[ ! -s $root/work/nested/.envrc && ! -s $root/missing/.envrc && ! -s $root/emu/.envrc && ! -s $root/enterprise/.envrc ]] || fail 'migration changed managed-only envrc'
-[[ $(wc -l < "$root/direnv-deny.log") -eq 5 ]] || fail 'manual denial count changed during migration'
-for dir in "$root/work" "$root/work/nested" "$root/missing" "$root/emu" "$root/enterprise"; do
-  grep -Fxq "$dir/.envrc" "$root/direnv-deny.log" || fail "migration did not deny $dir"
+[[ $(wc -l < "$root/direnv-deny.log") -eq 5 ]] || fail 'cleanup did not deny each managed envrc once'
+for dir in "${dirs[@]}"; do
+  grep -Fxq "$dir/.envrc" "$root/direnv-deny.log" || fail "cleanup did not deny $dir"
 done
 [[ ! -s $root/direnv-unexpected.log ]] || { cat "$root/direnv-unexpected.log" >&2; fail 'unexpected direnv command, including allow'; }
+[[ ! -e $lib ]] || fail 'cleanup kept the direnv library'
+[[ -e $hook ]] || fail 'external-shell cleanup deleted a hook the shell manager may source'
+grep -Fq "Remove the line that sources $hook" "$root/migrate.log" || fail 'external-shell hook guidance missing'
 [[ $(cat "$HOME/.bashrc") == '# externally managed bash' && $(cat "$HOME/.zshrc") == '# externally managed zsh' ]] || fail 'migration changed external RC'
-printf '%s\n' 'PASS: reload transitions, migration preserves mode and external RC'
+if "$candidate" setup --native=false > "$root/legacy.log" 2>&1; then fail 'setup --native=false should fail'; fi
+grep -q 'were removed' "$root/legacy.log" || fail 'removed-mode guidance missing'
+printf '%s\n' 'PASS: legacy cleanup preserves user bytes and external RC'
 SMOKE

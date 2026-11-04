@@ -47,8 +47,8 @@ gh autoaccount pin bob --owner work-org --git-email bob@example.test
 gh autoaccount unpin --owner work-org            # add --host for Enterprise
 ```
 
-An owner pin has an `owner` and no `dir`, never writes `.envrc`, does not support
-`--export-token`, matches the owner case-insensitively and is unique per
+An owner pin has an `owner` and no `dir`, matches the owner case-insensitively and
+is unique per
 `(host, owner)`. `exec --require-pin` accepts an owner or a directory pin.
 
 The owner comes from, in order: the Git credential request path, gh's `-R/--repo`,
@@ -151,8 +151,8 @@ registry/settings or an inaccessible directory can fail the command.
 | `authentication` | `selected`, `source`, `credential_available`, `verified` (always `false`), optional `error`. Availability does not establish validity, login, permissions or SSO. |
 | `git` | Optional `git_dir`, `author_ident`, `committer_ident`, `error`: actual Git results in the target directory under the current config and environment, without pin identity injection. |
 
-Authentication sources include `keyring`, `token_command`, the four supported token
-variable names, `default` and `unavailable`. Errors carry `code` and `message`
+Authentication sources are `keyring`, `token_command`, `default` and `unavailable`;
+inherited token variables never stand in for a selected account. Errors carry `code` and `message`
 (for example `credential_unavailable`, `repository_unavailable`,
 `identity_unavailable`, with partial results). `list --json` emits `pins` with the
 same pin objects, or `[]`.

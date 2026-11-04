@@ -43,8 +43,8 @@ For another directory use `status --dir PATH --json` and inspect its context.
 ## Select and verify
 
 Without `--require-pin`, `exec` selects an explicit `--user`, then the deepest
-real matching directory pin, then the `github.com` default, then unselected legacy
-behavior. An explicit `--user` without `--require-pin`, and a default, do not
+real matching directory pin, then the `github.com` default, then no selection
+(ordinary `gh` behavior). An explicit `--user` without `--require-pin`, and a default, do not
 inherit pin host, token command, identity, or SSH metadata, even when a pin matches.
 Pins match canonical physical paths.
 
@@ -78,11 +78,11 @@ path and a valid real `gh` binary. Unmodified upstream `gh` may require login be
 extension dispatch. Do not assume arbitrary aliases or `gh extension exec` have
 the native recovery behavior.
 
-Managed or malformed old wrapper `.envrc` content blocks native setup, pin, unpin,
-and migration. With separate approval, review the entire file, manually run
-`direnv deny`, remove only managed bytes while preserving custom content, then reload
-the shell and clear old exports before retrying. Do not automate cleanup or assume
-backups exist. Preserve the compatibility storage `~/.config/gh-autoprofile` and
+Files left by the retired direnv wrapper and export modes (managed `.envrc` blocks,
+the direnv library, the shell hook) are listed by `doctor` and removed by
+`gh autoaccount setup --migrate`, which changes configuration and needs separate
+approval. It reports symlinked or malformed `.envrc` files for manual review instead
+of editing them; do not edit those yourself without approval. Preserve the compatibility storage `~/.config/gh-autoprofile` and
 `GH_AUTOPROFILE_*` names; do not broadly rename them.
 
 ## Skill access

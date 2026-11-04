@@ -210,32 +210,6 @@ func VerifyTokenIdentity(ctx context.Context, user, host, token string) error {
 
 func validLogin(user string) bool { return config.ValidLogin(user) }
 
-// GetTokenWithFallbackForHost considers only the ambient pair for the selected host class.
-func GetTokenWithFallbackForHost(ctx context.Context, request TokenRequest) (string, string, error) {
-	host, err := config.NormalizeHost(request.Host)
-	if err != nil {
-		return "", "", err
-	}
-	if request.TokenCommand != "" {
-		token, err := ResolveToken(ctx, request)
-		return token, "token_command", err
-	}
-	keys := []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
-	if host == "github.com" || strings.HasSuffix(host, ".ghe.com") {
-		keys = []string{"GH_TOKEN", "GITHUB_TOKEN"}
-	}
-	for _, key := range keys {
-		if token := os.Getenv(key); token != "" {
-			return token, key, ValidateToken(token)
-		}
-	}
-	token, err := ResolveToken(ctx, request)
-	if err != nil {
-		return "", "", err
-	}
-	return token, "keyring", nil
-}
-
 // GetTokenWithFallback resolves a token for the given user, checking
 // environment variables first (for non-interactive/CI contexts) before
 // falling back to the gh CLI keyring.

@@ -72,7 +72,7 @@ export PATH="$root/bin:/usr/bin:/bin"
 [[ -L $HOME/.local/bin/gh && $(cat "$HOME/.bashrc") == '# external rc' ]] || fail 'setup shim or RC'
 [[ $HOME/.local/bin/gh -ef $root/gh-autoaccount/gh-autoaccount ]] || fail 'old shim did not refresh to new executable'
 grep -Fq "$root/gh-autoaccount/gh-autoaccount" "$XDG_CONFIG_HOME/gh-autoprofile/git-credential-helper" || fail 'old helper did not refresh to new executable'
-grep -Fq 'autoaccount exec' "$XDG_CONFIG_HOME/gh-autoprofile/hook.sh" || fail 'old-path hook did not refresh to new command'
+[[ ! -e $XDG_CONFIG_HOME/gh-autoprofile/hook.sh && ! -e $XDG_CONFIG_HOME/direnv/lib/gh-autoprofile.sh ]] || fail 'setup installed a retired legacy file'
 if "$realgh" alias list | grep -q '^aa:'; then fail 'setup configured alias without opt-in'; fi
 "$realgh" alias set --shell aa 'printf conflict' > /dev/null
 "$realgh" alias list > "$root/aliases-before"

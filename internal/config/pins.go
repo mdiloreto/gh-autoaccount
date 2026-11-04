@@ -12,24 +12,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// PinMode controls how tokens are injected into the shell.
+// PinMode is a registry field kept for compatibility with older binaries.
 type PinMode string
 
 const (
-	// ModeWrapper (default) — direnv exports only the GH_AUTOPROFILE_USER
-	// marker; a shell hook creates gh()/git() wrapper functions that inject
-	// the token per-invocation (~30 ms). The token never sits in the
-	// shell environment.
+	// ModeWrapper is the only current mode: tokens are injected per command and
+	// never sit in the shell environment. The name predates native routing and
+	// is kept so older binaries read new registries the same way.
 	ModeWrapper PinMode = "wrapper"
 
-	// ModeExport — direnv exports GH_TOKEN and GITHUB_TOKEN directly into
-	// the shell environment (legacy behaviour). Use for directories where
-	// third-party tools need the env var.
+	// ModeExport marks a pin from the retired export mode; setup converts it.
 	ModeExport PinMode = "export"
 )
 
 // Pin maps either a directory or a repository owner to an account. Exactly one
-// of Dir and Owner is set; owner pins are wrapper-mode only and have no .envrc.
+// of Dir and Owner is set.
 type Pin struct {
 	User         string  `yaml:"user"`
 	Host         string  `yaml:"host,omitempty"`

@@ -190,30 +190,6 @@ func TestManagedLoginBrokerAndIdentity(t *testing.T) {
 	}
 }
 
-func TestHostFallbackIgnoresWrongClass(t *testing.T) {
-	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
-		t.Setenv(key, "")
-	}
-	t.Setenv("GH_TOKEN", "cloud")
-	t.Setenv("GH_ENTERPRISE_TOKEN", "enterprise")
-	for _, tc := range []struct{ host, token, source string }{{"", "cloud", "GH_TOKEN"}, {"a.ghe.com", "cloud", "GH_TOKEN"}, {"git.example.com", "enterprise", "GH_ENTERPRISE_TOKEN"}} {
-		token, source, err := GetTokenWithFallbackForHost(context.Background(), TokenRequest{User: "alice", Host: tc.host})
-		if err != nil || token != tc.token || source != tc.source {
-			t.Fatalf("%q: %q %q %v", tc.host, token, source, err)
-		}
-	}
-	t.Setenv("GH_ENTERPRISE_TOKEN", "")
-	t.Setenv("GH_AUTOPROFILE_REAL_GH", "/nonexistent")
-	if _, _, err := GetTokenWithFallbackForHost(context.Background(), TokenRequest{User: "alice", Host: "git.example.com"}); err == nil {
-		t.Fatal("used cloud token for enterprise")
-	}
-	t.Setenv("GH_ENTERPRISE_TOKEN", "enterprise")
-	t.Setenv("GH_TOKEN", "")
-	if _, _, err := GetTokenWithFallbackForHost(context.Background(), TokenRequest{User: "alice"}); err == nil {
-		t.Fatal("used enterprise token for github.com")
-	}
-}
-
 func TestStreamingBrokerAndVerificationTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "command")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nwhile :; do printf '01234567890123456789012345678901'; done\n"), 0700); err != nil {
@@ -303,7 +279,7 @@ exit "$TEST_EXIT"
 		}
 	}
 	t.Setenv("TEST_EXIT", "1")
-	if _, _, err := GetTokenWithFallbackForHost(context.Background(), req); err == nil {
+	if _, err := ResolveToken(context.Background(), req); err == nil {
 		t.Fatal("broker failure fell back")
 	}
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 10\n"), 0700); err != nil {

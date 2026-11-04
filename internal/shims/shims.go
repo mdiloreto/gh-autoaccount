@@ -43,44 +43,6 @@ func CheckGHReplaceable() error {
 	return ensureManagedOrMissing(path)
 }
 
-// InstallGH installs the gh shim that delegates to gh-autoaccount.
-func InstallGH(extensionBinaryPath, realGHPath string) (string, error) {
-	shimPath, err := GHPath()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(shimPath), 0755); err != nil {
-		return "", fmt.Errorf("cannot create shim directory: %w", err)
-	}
-	if err := ensureManagedOrMissing(shimPath); err != nil {
-		return "", err
-	}
-	wasNative := managedNativeLink(shimPath)
-
-	realGHQuoted := shellQuote(realGHPath)
-	extQuoted := shellQuote(extensionBinaryPath)
-	content := strings.Join([]string{
-		"#!/usr/bin/env bash",
-		shimSignature,
-		"set -euo pipefail",
-		fmt.Sprintf(`if [[ -n "${GH_AUTOPROFILE_DISABLE_SHIM:-}" ]]; then exec %s "$@"; fi`, realGHQuoted),
-		fmt.Sprintf(`GH_PATH=%s GH_AUTOPROFILE_REAL_GH=%s exec %s __shim-gh "$@"`, realGHQuoted, realGHQuoted, extQuoted),
-		"",
-	}, "\n")
-
-	if err := config.WriteAtomicMode(shimPath, []byte(content), 0755); err != nil {
-		return "", fmt.Errorf("cannot write gh shim: %w", err)
-	}
-	if wasNative {
-		if record, err := nativeRecordPath(); err == nil {
-			if err := os.Remove(record); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("legacy shim installed but cannot remove native ownership record: %w", err)
-			}
-		}
-	}
-	return shimPath, nil
-}
-
 // IsGHInstalled reports whether the gh shim exists.
 func IsGHInstalled() bool {
 	shimPath, err := GHPath()
@@ -88,29 +50,6 @@ func IsGHInstalled() bool {
 		return false
 	}
 	return IsNativeGHInstalled() || (ensureManagedOrMissing(shimPath) == nil && fileExists(shimPath) && !isSymlink(shimPath))
-}
-
-// TargetsGH reports whether the installed managed shim points to realGHPath.
-// Legacy shims return false so setup --migrate refreshes their quoting too.
-func TargetsGH(realGHPath string) (bool, error) {
-	if IsNativeGHInstalled() {
-		return true, nil
-	}
-	shimPath, err := GHPath()
-	if err != nil {
-		return false, err
-	}
-	data, err := os.ReadFile(shimPath)
-	if err != nil {
-		return false, fmt.Errorf("cannot read gh shim: %w", err)
-	}
-	content := string(data)
-	if !strings.HasPrefix(content, "#!/usr/bin/env bash\n"+shimSignature+"\nset -euo pipefail\n") {
-		return false, nil
-	}
-	quoted := shellQuote(realGHPath)
-	return strings.Contains(content, `then exec `+quoted+` "$@"; fi`) &&
-		strings.Contains(content, `GH_PATH=`+quoted+` GH_AUTOPROFILE_REAL_GH=`+quoted+` exec `), nil
 }
 
 // InjectPath prepends the shim dir to the shell RC file.

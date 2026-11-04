@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitidentity"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 	"github.com/spf13/cobra"
 )
@@ -37,7 +37,7 @@ func NewDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check setup and migration health",
-		Long:  "Validate shell integration, optional Git identity, pin schema, and managed .envrc permissions.",
+		Long:  "Validate the gh proxy, PATH, Git credential helper, optional Git identity, pin schema, and files left by retired modes.",
 		RunE:  runDoctor,
 	}
 	cmd.Flags().Bool("fix", false, "Run setup migration automatically")
@@ -62,96 +62,29 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load setup settings: %w", err)
 	}
-	issues, legacyIssues := 0, 0
+	issues := 0
 	fmt.Println("gh-autoaccount doctor")
 	fmt.Println("=====================")
-	if settings.Native {
-		fmt.Println("INFO routing mode: native (registry-based gh and Git HTTPS)")
-		fmt.Println("INFO direnv is optional for native routing; export workflows require it")
-	} else {
-		fmt.Println("INFO routing mode: legacy (shell wrappers and optional shim)")
-		if notice := legacyNotice(); notice != "" {
-			fmt.Println("WARN " + notice)
-			issues++
-			legacyIssues = 1
-		}
-	}
-
-	libPath, libPathErr := direnvlib.ShellLibPath()
-	if direnvlib.IsShellLibInstalled() {
-		fmt.Println("OK   direnv library installed")
-		if libPathErr == nil {
-			fmt.Printf("     path: %s\n", libPath)
-		}
-	} else {
-		if settings.Native {
-			fmt.Println("WARN direnv library missing (export workflows unavailable; native routing unaffected)")
-		} else {
-			fmt.Println("WARN direnv library missing")
-		}
-		if libPathErr == nil {
-			fmt.Printf("     expected path: %s\n", libPath)
-		}
-		issues++
-	}
-
-	if settings.ExternalShell {
-		fmt.Println("INFO external shell integration not verified (RC management disabled)")
-	} else if direnvlib.CheckShellHookInstalled() {
-		fmt.Println("OK   shell hook source configured")
-	} else if settings.Native {
-		fmt.Println("INFO shell hook source not detected (optional for native routing; needed for legacy integration)")
-	} else {
-		fmt.Println("WARN shell hook source not detected")
-		issues++
-	}
 
 	shimPath, shimPathErr := shims.GHPath()
-	if settings.Native {
-		if !shims.NativeGHSupported() {
-			fmt.Println("WARN native gh routing is unsupported on this platform")
-			issues++
-		}
-		if shims.IsNativeGHInstalled() {
-			fmt.Println("OK   native gh proxy installed")
-		} else {
-			fmt.Println("WARN required native gh proxy missing, broken, or unmanaged")
-			issues++
-		}
-		if shimPathErr == nil {
-			fmt.Printf("     path: %s\n", shimPath)
-		}
-		if realGH, resolveErr := ghauth.ResolveGHPath(); resolveErr != nil {
-			fmt.Printf("WARN cannot discover real gh at runtime: %v\n", resolveErr)
-			issues++
-		} else {
-			fmt.Printf("OK   runtime real gh: %s\n", realGH)
-		}
-	} else if shims.IsGHInstalled() {
-		fmt.Println("OK   gh shim installed")
-		if shimPathErr == nil {
-			fmt.Printf("     path: %s\n", shimPath)
-		}
-		realGH, resolveErr := ghauth.ResolveGHPath()
-		if resolveErr != nil {
-			fmt.Printf("WARN cannot verify gh shim target: %v\n", resolveErr)
-			issues++
-		} else if current, targetErr := shims.TargetsGH(realGH); targetErr != nil {
-			fmt.Printf("WARN cannot inspect gh shim target: %v\n", targetErr)
-			issues++
-		} else if current {
-			fmt.Println("OK   gh shim target matches current gh")
-		} else {
-			fmt.Println("WARN gh shim target is stale or uses the legacy format")
-			fmt.Printf("     current gh: %s\n", realGH)
-			fmt.Println("     refresh with: gh autoaccount setup --migrate")
-			issues++
-		}
+	if !shims.NativeGHSupported() {
+		fmt.Println("WARN native gh routing is unsupported on this platform")
+		issues++
+	}
+	if shims.IsNativeGHInstalled() {
+		fmt.Println("OK   native gh proxy installed")
 	} else {
-		fmt.Println("INFO gh shim not installed (optional)")
-		if shimPathErr == nil {
-			fmt.Printf("     expected path: %s\n", shimPath)
-		}
+		fmt.Println("WARN required native gh proxy missing, broken, or unmanaged")
+		issues++
+	}
+	if shimPathErr == nil {
+		fmt.Printf("     path: %s\n", shimPath)
+	}
+	if realGH, resolveErr := ghauth.ResolveGHPath(); resolveErr != nil {
+		fmt.Printf("WARN cannot discover real gh at runtime: %v\n", resolveErr)
+		issues++
+	} else {
+		fmt.Printf("OK   runtime real gh: %s\n", realGH)
 	}
 
 	if settings.Mise {
@@ -167,7 +100,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	pathVerified := false
-	if settings.Native && shims.NativeGHSupported() && shims.IsNativeGHInstalled() {
+	if shims.NativeGHSupported() && shims.IsNativeGHInstalled() {
 		var pathIssues int
 		pathVerified, pathIssues = checkGHOnPath(settings)
 		issues += pathIssues
@@ -188,19 +121,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if helperUsable {
 		fmt.Println("OK   git credential helper installed")
 		fmt.Printf("     path: %s\n", helperPath)
-		if settings.Native {
-			if target, targetErr := gitcred.Target(); targetErr != nil {
-				fmt.Printf("WARN cannot inspect git credential helper target: %v\n", targetErr)
-				issues++
-			} else if info, statErr := os.Stat(target); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-				fmt.Printf("WARN git credential helper target is missing or not executable: %s\n", target)
-				fmt.Println("     repair with: gh autoaccount setup --migrate")
-				issues++
-			} else {
-				fmt.Printf("OK   git credential helper target: %s\n", target)
-			}
+		if target, targetErr := gitcred.Target(); targetErr != nil {
+			fmt.Printf("WARN cannot inspect git credential helper target: %v\n", targetErr)
+			issues++
+		} else if info, statErr := os.Stat(target); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			fmt.Printf("WARN git credential helper target is missing or not executable: %s\n", target)
+			fmt.Println("     repair with: gh autoaccount setup --migrate")
+			issues++
+		} else {
+			fmt.Printf("OK   git credential helper target: %s\n", target)
 		}
-		// Legacy installs can carry the same helper, so this runs in both modes.
 		if realGH, realErr := gitcred.RealGH(); realErr != nil {
 			fmt.Printf("WARN cannot inspect git credential helper gh: %v\n", realErr)
 			issues++
@@ -213,11 +143,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 				fmt.Printf("OK   git credential helper gh: %s\n", realGH)
 			}
 		}
-	} else if settings.Native {
+	} else {
 		fmt.Println("WARN required git credential helper missing or not executable")
 		issues++
-	} else {
-		fmt.Println("INFO git credential helper not installed (optional)")
 	}
 
 	if !settings.GitIdentity {
@@ -259,7 +187,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			issues++
 		}
 	}
-	if gitcred.CheckConfigured() || settings.Native {
+	{
 		hosts, err := gitcred.Hosts(registry)
 		if err != nil {
 			return fmt.Errorf("cannot inspect pin hosts: %w", err)
@@ -286,41 +214,39 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 		if configured {
 			fmt.Println("OK   git credential helper configured")
-		} else if settings.Native && !gitcred.CheckConfigured() {
+		} else if !gitcred.CheckConfigured() {
 			fmt.Println("WARN required git credential helper not configured")
 		}
-	} else {
-		fmt.Println("INFO git credential helper not configured (optional; setup --credential-helper)")
 	}
 
-	missingModes := 0
-	envrcPermIssues := 0
+	var leftovers []string
 	for _, pin := range registry.Pins {
-		if pin.Mode == "" {
-			missingModes++
+		if pin.Mode != config.ModeWrapper {
+			target := pin.Dir
+			if pin.IsOwner() {
+				target = "owner " + pin.Owner
+			}
+			leftovers = append(leftovers, fmt.Sprintf("pin for %s is not migrated (mode %q)", target, pin.Mode))
 		}
-		if pin.IsOwner() {
-			continue
+		if !pin.IsOwner() && legacy.HasManagedEnvrc(pin.Dir) {
+			leftovers = append(leftovers, filepath.Join(pin.Dir, ".envrc")+" has a retired managed block")
 		}
-		envrcPath := filepath.Join(pin.Dir, ".envrc")
-		if fi, err := os.Stat(envrcPath); err == nil {
-			if fi.Mode().Perm() != 0600 {
-				envrcPermIssues++
+	}
+	leftovers = append(leftovers, legacy.LeftoverFiles()...)
+	if rcFiles, err := legacy.RCFiles(); err == nil {
+		for _, rc := range rcFiles {
+			if legacy.ReferencesHook(rc) {
+				leftovers = append(leftovers, rc+" sources the retired hook")
 			}
 		}
 	}
-
-	if missingModes == 0 {
-		fmt.Println("OK   pin modes normalized")
+	if len(leftovers) == 0 {
+		fmt.Println("OK   no files left from the retired direnv modes")
 	} else {
-		fmt.Printf("WARN %d pin(s) missing mode (will default to wrapper)\n", missingModes)
-		issues++
-	}
-
-	if envrcPermIssues == 0 {
-		fmt.Println("OK   managed .envrc permissions are 0600")
-	} else {
-		fmt.Printf("WARN %d managed .envrc file(s) not 0600\n", envrcPermIssues)
+		fmt.Println("WARN files left from the retired direnv modes:")
+		for _, item := range leftovers {
+			fmt.Printf("     %s\n", item)
+		}
 		issues++
 	}
 
@@ -344,9 +270,6 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// The legacy warning names its own fix; setup --migrate preserves the mode.
-	if issues > legacyIssues {
-		fmt.Println("\nRun `gh autoaccount setup --migrate` to fix detected issues.")
-	}
+	fmt.Println("\nRun `gh autoaccount setup --migrate` to fix detected issues.")
 	return nil
 }

@@ -32,10 +32,9 @@ installs precompiled extensions from the latest release. Upgrade with
 refresh generated files. Checksums in `checksums.txt` detect corruption of a manual
 download, not publisher identity.
 
-Platforms: native routing, the default, works on Linux and macOS with Bash or zsh.
-Windows binaries are published, but native routing is not available there; only the
-[deprecated legacy modes](docs/legacy-modes.md) are, and complete Windows shell
-integration is not established.
+Platforms: Linux and macOS with Bash or zsh. Windows binaries are published, but
+routing is not available on Windows yet
+([#15](https://github.com/mdiloreto/gh-autoaccount/issues/15)).
 
 The previous project name, `gh-autoprofile`, was a different extension. Installing
 this one does not rename or remove it. Verify the replacement before removing a
@@ -192,9 +191,9 @@ gh autoaccount doctor --fix    # runs setup --migrate; it changes configuration,
 gh autoaccount status          # local view of what applies here
 ```
 
-`doctor` reports library and hook health, the `gh` shim and PATH, Git credential
-helper configuration, Git identity registration, persisted external-shell mode, pin
-schema, and managed `.envrc` permissions. Common warnings:
+`doctor` reports the `gh` shim and PATH, Git credential helper configuration, Git
+identity registration, persisted external-shell mode, pin schema, and files left by
+the retired direnv modes. Common warnings:
 
 - **Plain `gh` resolves to something other than the managed shim**: the shim
   directory is not first on PATH. Restart the shell or fix PATH; with mise, see above.
@@ -209,10 +208,8 @@ schema, and managed `.envrc` permissions. Common warnings:
   <path>`. Run `gh autoaccount setup --migrate` after upgrading or uninstalling `gh`.
 - **`useHttpPath` is not true**: only reported for hosts with owner pins; `doctor
   --fix` restores it.
-- **Pins missing a mode, or `.envrc` files not 0600**: `doctor --fix`.
-- **Setup, pin or unpin refuses because of an old `.envrc` block**: a managed or
-  malformed wrapper block from legacy mode blocks native commands; follow the
-  cleanup steps in [legacy modes](docs/legacy-modes.md#migrating-from-legacy-wrapper-blocks).
+- **Files left from the retired direnv modes**: see
+  [Upgrading from the direnv modes](#upgrading-from-the-direnv-modes).
 - **A command used the wrong account**: run `gh autoaccount status --dir <dir>`.
   Without a shim or helper, ordinary global `gh`/Git behavior applies. A 404 can also
   mean missing access or SSO rather than the wrong login.
@@ -224,10 +221,9 @@ output. Never include tokens or private keys.
 
 The project was previously named `gh-autoprofile`, and its on-disk names are kept for
 compatibility. Config and state live under `~/.config/gh-autoprofile/`
-(`$XDG_CONFIG_HOME/gh-autoprofile/` if set): `pins.yml`, `settings.yml`, the hook,
-the credential helper script and optional `git-identity/` includes. The `gh` shim is
-`~/.local/bin/gh`. `GH_AUTOPROFILE_*` environment variables, `.envrc` markers and
-`use_gh_autoprofile` also keep their names. This is not an incomplete migration;
+(`$XDG_CONFIG_HOME/gh-autoprofile/` if set): `pins.yml`, `settings.yml`, the
+credential helper script and optional `git-identity/` includes. The `gh` shim is
+`~/.local/bin/gh`. `GH_AUTOPROFILE_*` environment variables also keep their names. This is not an incomplete migration;
 do not bulk-rename these. The registry is written with mode 0600 and the config
 directory with mode 0700.
 
@@ -240,17 +236,28 @@ same-user process can still read what it is handed or replace trusted paths.
 Environment variables select a host class (`github.com`/`*.ghe.com` versus other
 Enterprise hosts), not an exact host; the Git helper enforces the exact host. A
 checkout's remotes or submodules under an owner-pinned owner authenticate as that
-pin's account. Export mode, which places tokens in the environment, is deprecated.
-See [SECURITY.md](SECURITY.md) for trust boundaries and private vulnerability
+pin's account. See [SECURITY.md](SECURITY.md) for trust boundaries and private vulnerability
 reporting.
 
-## Deprecated modes
+## Upgrading from the direnv modes
 
-Legacy wrapper mode (direnv plus shell-prompt functions) and export mode
-(`pin --export-token`, tokens in the environment) are deprecated. They miss
-non-interactive shells and export mode exposes tokens to every child of the shell.
-Fresh installs use native routing. To move an existing installation, run
-`gh autoaccount setup --native`. See [docs/legacy-modes.md](docs/legacy-modes.md).
+Releases before v0.1.0-beta.6 also had a direnv wrapper mode and an export mode
+(`pin --export-token`). Both are removed. After upgrading, run
+`gh autoaccount setup --migrate`. It converts export pins to native routing and
+removes their leftovers:
+
+- the managed `.envrc` block of each pinned directory, after `direnv deny`, keeping
+  any other content and deleting the file if nothing else remains
+- the direnv library and the shell hook, and the hook's source block in your RC file
+
+It never edits a symlinked `.envrc` or one with malformed markers; it lists those as
+"Review required" for you to fix by hand. With `--no-shell-rc`, it keeps the hook
+file and tells you to remove the line that sources it from your shell config first.
+Restart open shells afterwards to drop old wrapper functions and exported tokens.
+`doctor` lists anything that is left.
+
+A tool that needs a token in its environment now runs through
+`gh autoaccount exec -- <tool>`, which scopes the token to that one command.
 
 ## Contributing
 

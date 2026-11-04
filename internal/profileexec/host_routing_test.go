@@ -10,27 +10,23 @@ import (
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 )
 
-func TestAmbientSelectionMarkers(t *testing.T) {
+func TestAmbientTokenNeverReplacesStoredCredential(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", "1")
 	t.Setenv("GH_ENTERPRISE_TOKEN", "ambient-token")
 	gh := filepath.Join(root, "gh")
 	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf 'stored-token\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GH_AUTOPROFILE_REAL_GH", gh)
-	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: root, User: "alice", Host: "enterprise.example", Mode: config.ModeExport}}}); err != nil {
+	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: root, User: "alice", Host: "enterprise.example", Mode: config.ModeWrapper}}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ name, user, host, expect, token string }{
-		{"first use", "", "", "", "stored-token"},
-		{"matching pair", "ALICE", "ENTERPRISE.EXAMPLE", "", "ambient-token"},
-		{"user only", "alice", "", "", "stored-token"},
-		{"host only", "", "enterprise.example", "", "stored-token"},
-		{"same user other host", "alice", "other.example", "", "stored-token"},
-		{"expect user permits ambient", "alice", "enterprise.example", "ALICE", "ambient-token"},
-		{"expect user no markers", "", "", "alice", "stored-token"},
+	// Stale selection markers from an old shell hook must not change the outcome.
+	for _, tc := range []struct{ name, user, host, expect string }{
+		{"no markers", "", "", ""},
+		{"matching markers", "ALICE", "ENTERPRISE.EXAMPLE", ""},
+		{"matching markers with expect user", "alice", "enterprise.example", "ALICE"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GH_AUTOPROFILE_USER", tc.user)
@@ -39,8 +35,8 @@ func TestAmbientSelectionMarkers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ctx.Token != tc.token {
-				t.Fatalf("token %q, want %q", ctx.Token, tc.token)
+			if ctx.Token != "stored-token" {
+				t.Fatalf("token %q, want stored-token", ctx.Token)
 			}
 		})
 	}

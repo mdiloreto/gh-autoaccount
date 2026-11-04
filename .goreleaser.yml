@@ -61,10 +61,11 @@ release:
 
     Old and new extensions have separate names. After verifying the replacement,
     review and explicitly approve setup or migration; no live configuration is
-    migrated automatically. If an old managed or malformed wrapper `.envrc`
-    blocks native setup, pin, unpin, or migration, review the whole file, run
-    `direnv deny`, manually remove only the managed block while preserving custom
-    content, reload the shell and clear old exports, then retry.
+    migrated until you run it. The legacy direnv wrapper and export modes have
+    been removed: setup converts export pins to native routing and removes their
+    leftovers (managed `.envrc` blocks after `direnv deny`, the direnv library,
+    the shell hook and its RC block), reporting anything it cannot safely edit.
+    Tools that read `GH_TOKEN` should run through `gh autoaccount exec --`.
 
     ```bash
     GH_AUTOPROFILE_DISABLE_SHIM=1 command gh autoaccount setup --migrate

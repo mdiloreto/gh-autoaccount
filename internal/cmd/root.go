@@ -5,7 +5,8 @@ import (
 	"os"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
+	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 	"github.com/spf13/cobra"
 )
 
@@ -69,18 +70,24 @@ func warnUpgradeDrift(cmd *cobra.Command) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "gh-autoaccount: cannot load setup settings: %v\n", err)
 		return
 	}
-	needsSetup := !direnvlib.IsShellLibInstalled() || (!settings.ExternalShell && !direnvlib.CheckShellHookInstalled())
-	needsModeMigration := false
-
+	needsMigration := shims.NativeGHSupported() && !shims.IsNativeGHInstalled()
 	for _, pin := range registry.Pins {
-		if pin.Mode == "" {
-			needsModeMigration = true
+		needsMigration = needsMigration || pin.Mode != config.ModeWrapper
+	}
+	if libPath, err := legacy.ShellLibPath(); err == nil {
+		if _, err := os.Lstat(libPath); err == nil {
+			needsMigration = true
 		}
 	}
-
-	if !(needsSetup || needsModeMigration) {
+	// In external-shell mode setup keeps the hook for the user to unhook first.
+	if hookPath, err := legacy.ShellHookPath(); err == nil && !settings.ExternalShell {
+		if _, err := os.Lstat(hookPath); err == nil {
+			needsMigration = true
+		}
+	}
+	if !needsMigration {
 		return
 	}
 
-	fmt.Fprintln(cmd.ErrOrStderr(), "gh-autoaccount: upgrade tasks detected. Run `gh autoaccount setup --migrate` to apply security migrations.")
+	fmt.Fprintln(cmd.ErrOrStderr(), "gh-autoaccount: upgrade tasks detected. Run `gh autoaccount setup --migrate` to remove retired legacy files and convert old pins.")
 }

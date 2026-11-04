@@ -9,58 +9,63 @@ import (
 	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitidentity"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 	"github.com/spf13/cobra"
 )
+
+// legacyRemoved names the replacement for the retired direnv modes.
+const legacyRemoved = "legacy wrapper and export routing were removed; native routing covers every shell, and `gh autoaccount exec -- <command>` gives a tool a command-scoped token"
 
 // NewSetupCmd creates the `setup` subcommand.
 func NewSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Install shell integration and optional non-interactive tooling",
+		Short: "Install native gh routing and the Git HTTPS credential helper",
 		Long: `Checks that gh CLI (>= 2.40.0) is installed, then installs:
 
-  1. The direnv shell library (use_gh_autoprofile / use_gh_autoprofile_export)
-  2. The shell hook (native wrapper cleanup, or deprecated legacy wrappers)
-  3. For native routing, a PATH-level gh proxy and GitHub HTTPS credential helper
-  4. Optionally, Git-native path-scoped identity (--git-identity)
-  5. Optionally, mise compatibility (--mise) for native routing
+  1. A PATH-level gh proxy that routes plain gh per pin
+  2. The GitHub HTTPS credential helper that routes Git per pin
+  3. Optionally, Git-native path-scoped identity (--git-identity)
+  4. Optionally, mise compatibility (--mise)
+
+Setup also removes what the retired direnv wrapper and export modes left
+behind: managed .envrc blocks (after direnv deny), the direnv library, the shell
+hook and its RC source block. Content it cannot safely edit is reported for
+manual review.
 
 Use --no-shell-rc for externally managed shell integration. This preference is
 persisted: future setup, --migrate, and doctor --fix leave RC and PATH untouched.
 Use --no-shell-rc=false to return to automatic RC integration.
 
-Native routing is the default on Linux and macOS for a fresh install: registry-
-based gh routing and the required Git HTTPS credential helper, without shell
-wrappers, so non-interactive shells (agents, editor tasks, cron) are covered.
-Direnv is optional for native routing but remains required for export workflows.
-An existing legacy installation keeps legacy routing, which is deprecated, until
-you run setup --native. Use --native=false to select legacy gh and hook routing
-explicitly; the configured Git helper and identity settings remain in place.
-Git identity remains separately opt-in. Legacy setup requires direnv.
-
-Run this once after installing gh-autoaccount.
-
-Use --migrate after upgrading to refresh generated files,
-repair permissions, and update existing pins to the latest defaults.`,
+Run this once after installing gh-autoaccount, and with --migrate after
+upgrading to refresh generated files, repair permissions, and update existing
+pins to the latest defaults.`,
 		RunE: runSetup,
 	}
-	cmd.Flags().Bool("migrate", false, "Migrate existing pins and rewrite managed .envrc files")
-	cmd.Flags().Bool("gh-shim", false, "Install PATH-level gh shim for non-interactive auth")
-	cmd.Flags().Bool("credential-helper", false, "Configure git credential helper for non-interactive auth (systemd, cron, scripts)")
+	cmd.Flags().Bool("migrate", false, "Refresh generated files and migrate existing pins")
 	cmd.Flags().Bool("no-shell-rc", false, "Persist external shell integration; do not edit shell RC or PATH")
 	cmd.Flags().Bool("git-identity", false, "Enable managed Git includeIf identity from pins (persists across migration)")
-	cmd.Flags().Bool("native", false, "Use native gh routing and Git helper (default for a fresh install); false selects deprecated legacy routing and retains the helper")
-	cmd.Flags().Bool("mise", false, "Keep plain gh on the managed shim when mise manages gh (native routing; persisted); false undoes it")
+	cmd.Flags().Bool("mise", false, "Keep plain gh on the managed shim when mise manages gh (persisted); false undoes it")
 	cmd.Flags().Bool("alias", false, "Optionally configure the non-clobbering gh aa alias")
+	// Accepted so existing scripts keep working; native routing always installs both.
+	for _, name := range []string{"native", "gh-shim", "credential-helper"} {
+		cmd.Flags().Bool(name, false, "")
+		_ = cmd.Flags().MarkHidden(name)
+	}
 	return cmd
 }
 
 func runSetup(cmd *cobra.Command, args []string) (retErr error) {
+	if native, _ := cmd.Flags().GetBool("native"); cmd.Flags().Changed("native") && !native {
+		return errors.New(legacyRemoved)
+	}
+	if !shims.NativeGHSupported() {
+		return fmt.Errorf("native gh routing is not supported on this platform yet")
+	}
 	unlock, err := config.LockMutations()
 	if err != nil {
 		return err
@@ -73,29 +78,13 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	if cmd.Flags().Changed("no-shell-rc") {
 		settings.ExternalShell, _ = cmd.Flags().GetBool("no-shell-rc")
 	}
-	previousNative := settings.Native
-	if cmd.Flags().Changed("native") {
-		settings.Native, _ = cmd.Flags().GetBool("native")
-	} else if !settings.Native && nativeGHSupported() && freshInstall() {
-		settings.Native = true
-	}
-	if notice := legacyNotice(); !settings.Native && notice != "" {
-		fmt.Fprintln(cmd.ErrOrStderr(), "gh-autoaccount: "+notice)
-	}
-	if settings.Native && !shims.NativeGHSupported() {
-		return fmt.Errorf("native gh routing is unsupported on this platform")
-	}
+	// Persisted so that an older binary reading these settings also stays native.
+	settings.Native = true
 	miseChanged := cmd.Flags().Changed("mise")
 	if miseChanged {
 		settings.Mise, _ = cmd.Flags().GetBool("mise")
 	}
 	if settings.Mise {
-		if !settings.Native {
-			if miseChanged {
-				return fmt.Errorf("--mise requires native routing; run: gh autoaccount setup --native --mise")
-			}
-			return fmt.Errorf("mise integration requires native routing; run `gh autoaccount setup --mise=false` before leaving native routing")
-		}
 		if miseChanged {
 			if _, err := miseExecutable(); err != nil {
 				return fmt.Errorf("--mise requires the mise executable on PATH: %w", err)
@@ -114,36 +103,13 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		return err
 	}
 	migrationRequested := migrate || gitIdentity
-	if settings.Native {
-		registry, err := config.LoadPins()
-		if err != nil {
-			return fmt.Errorf("cannot load pin registry: %w", err)
-		}
-		for _, pin := range registry.Pins {
-			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
-				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	if previousNative && !settings.Native && !migrationRequested {
-		fmt.Println("Legacy wrapper pins require direnv; run setup --migrate and reload your shell to activate native-only pins.")
-	}
-	installShim, err := cmd.Flags().GetBool("gh-shim")
+	registry, err := config.LoadPins()
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot load pin registry: %w", err)
 	}
-	credHelper, err := cmd.Flags().GetBool("credential-helper")
-	if err != nil {
-		return err
-	}
-	if migrate {
-		installShim = installShim || shims.IsGHInstalled()
-		credHelper = credHelper || gitcred.CheckConfigured()
-	}
-	if settings.Native || cmd.Flags().Changed("native") {
-		installShim = true
+	for _, pin := range registry.Pins {
+		// Export or unset modes come from an older install and must be converted.
+		migrationRequested = migrationRequested || pin.Mode != config.ModeWrapper
 	}
 
 	fmt.Println("gh-autoaccount setup")
@@ -166,50 +132,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	fmt.Printf("v%s\n", ghVersion)
 
-	// 2. Check direnv
-	fmt.Print("  Checking direnv............. ")
-	if !direnvlib.IsInstalled() && (settings.Native || (previousNative && cmd.Flags().Changed("native") && !settings.Native)) {
-		fmt.Println("NOT INSTALLED (optional for native routing; required for export workflows)")
-		if !settings.Native {
-			fmt.Println("    Legacy wrappers and export workflows require direnv to activate.")
-			allGood = false
-		}
-	} else if !direnvlib.IsInstalled() {
-		fmt.Println("MISSING")
-		fmt.Println()
-		fmt.Println("  direnv is required. Install it:")
-		fmt.Println("    Arch:   sudo pacman -S direnv")
-		fmt.Println("    Ubuntu: sudo apt install direnv")
-		fmt.Println("    macOS:  brew install direnv")
-		fmt.Println()
-		fmt.Println("  Then add the shell hook:")
-		fmt.Println("    bash:  echo 'eval \"$(direnv hook bash)\"' >> ~/.bashrc")
-		fmt.Println("    zsh:   echo 'eval \"$(direnv hook zsh)\"' >> ~/.zshrc")
-		fmt.Println("    fish:  echo 'direnv hook fish | source' >> ~/.config/fish/config.fish")
-		return fmt.Errorf("direnv not found")
-	} else {
-		direnvVersion, _ := direnvlib.GetVersion()
-		fmt.Printf("v%s\n", direnvVersion)
-	}
-
-	// 3. Check direnv shell hook
-	fmt.Print("  Checking direnv hook........ ")
-	if settings.ExternalShell {
-		fmt.Println("EXTERNAL (integration not verified)")
-	} else if direnvlib.CheckDirenvHook() {
-		fmt.Println("OK")
-	} else {
-		fmt.Println("NOT DETECTED")
-		fmt.Println("    Add the direnv hook to your shell config:")
-		fmt.Println("      bash: eval \"$(direnv hook bash)\"")
-		fmt.Println("      zsh:  eval \"$(direnv hook zsh)\"")
-		fmt.Println("      fish: direnv hook fish | source")
-		if !settings.Native {
-			allGood = false
-		}
-	}
-
-	// 4. Check logged-in accounts
+	// 2. Check logged-in accounts
 	fmt.Print("  Checking gh accounts........ ")
 	users, err := ghauth.ListUsers()
 	if err != nil {
@@ -230,45 +153,58 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	libraryGH, err := ghauth.ResolveGHPath()
-	if err != nil {
-		return fmt.Errorf("cannot resolve real gh binary for shell library: %w", err)
-	}
-	libraryBinary, err := resolveBinaryPath()
+	binPath, err := resolveBinaryPath()
 	if err != nil {
 		return err
 	}
-	// Capture only the files and Git helper chain touched by a mode transition.
-	committed := false
-	transition := settings.Native || cmd.Flags().Changed("native")
-	var shimSnapshot, recordSnapshot, helperSnapshot, settingsSnapshot, libSnapshot, hookSnapshot setupFileSnapshot
-	var rollback []func() error
-	var priorHelpers gitcred.HelperSnapshot
-	var helperHosts, helperPathHosts []string
-	var helperRealGH string
+	helperRealGH, err := ghauth.ResolveGHPath()
+	if err != nil {
+		return fmt.Errorf("cannot resolve real gh binary for Git helper: %w", err)
+	}
+	helperHosts, err := gitcred.Hosts(registry)
+	if err != nil {
+		return err
+	}
+	helperPathHosts, err := gitcred.OwnerHosts(registry)
+	if err != nil {
+		return err
+	}
 	configDir, err := config.ConfigDir()
 	if err != nil {
 		return err
 	}
-	libPath, err := direnvlib.ShellLibPath()
+	shimPath, err := shims.GHPath()
 	if err != nil {
 		return err
 	}
-	hookPath, err := direnvlib.ShellHookPath()
+	helperPath, err := gitcred.HelperPath()
 	if err != nil {
 		return err
 	}
+	if err := shims.CheckGHReplaceable(); err != nil {
+		return err
+	}
+	// Snapshot every file and the Git helper chain that setup may replace, so a
+	// failure before the commit point leaves the previous installation intact.
+	committed := false
+	var rollback []func() error
+	var settingsSnapshot, shimSnapshot, recordSnapshot, helperSnapshot setupFileSnapshot
 	for _, file := range []struct {
 		path string
 		dest *setupFileSnapshot
 	}{
 		{filepath.Join(configDir, "settings.yml"), &settingsSnapshot},
-		{libPath, &libSnapshot}, {hookPath, &hookSnapshot},
+		{shimPath, &shimSnapshot},
+		{filepath.Join(configDir, "native-gh-targets.json"), &recordSnapshot},
+		{helperPath, &helperSnapshot},
 	} {
-		*file.dest, err = snapshotSetupFile(file.path)
-		if err != nil {
+		if *file.dest, err = snapshotSetupFile(file.path); err != nil {
 			return err
 		}
+	}
+	priorHelpers, err := gitcred.SnapshotHosts(helperHosts)
+	if err != nil {
+		return fmt.Errorf("cannot inspect Git helper configuration: %w", err)
 	}
 	defer func() {
 		if retErr == nil || committed {
@@ -277,73 +213,11 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		for i := len(rollback) - 1; i >= 0; i-- {
 			retErr = errors.Join(retErr, rollback[i]())
 		}
+		retErr = errors.Join(retErr, gitcred.RestoreHosts(priorHelpers), helperSnapshot.restore())
 	}()
-	if settings.Native || credHelper {
-		helperRealGH, err = ghauth.ResolveGHPath()
-		if err != nil {
-			return fmt.Errorf("cannot resolve real gh binary for Git helper: %w", err)
-		}
-		registry, err := config.LoadPins()
-		if err != nil {
-			return err
-		}
-		helperHosts, err = gitcred.Hosts(registry)
-		if err != nil {
-			return err
-		}
-		if helperPathHosts, err = gitcred.OwnerHosts(registry); err != nil {
-			return err
-		}
-		priorHelpers, err = gitcred.SnapshotHosts(helperHosts)
-		if err != nil {
-			return fmt.Errorf("cannot inspect Git helper configuration: %w", err)
-		}
-		helperPath, err := gitcred.HelperPath()
-		if err != nil {
-			return err
-		}
-		helperSnapshot, err = snapshotSetupFile(helperPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if retErr != nil && !committed {
-				retErr = errors.Join(retErr, gitcred.RestoreHosts(priorHelpers), helperSnapshot.restore())
-			}
-		}()
-	}
-	if transition {
-		if err := shims.CheckGHReplaceable(); err != nil {
-			return err
-		}
-		shimPath, err := shims.GHPath()
-		if err != nil {
-			return err
-		}
-		files := []struct {
-			path string
-			dest *setupFileSnapshot
-		}{
-			{shimPath, &shimSnapshot},
-			{filepath.Join(configDir, "native-gh-targets.json"), &recordSnapshot},
-		}
-		for _, file := range files {
-			snapshot, err := snapshotSetupFile(file.path)
-			if err != nil {
-				return err
-			}
-			*file.dest = snapshot
-		}
-	}
-	restoreProxy := func() error {
-		if err := shims.CheckGHReplaceable(); err != nil {
-			return fmt.Errorf("cannot safely restore gh proxy: %w", err)
-		}
-		return errors.Join(recordSnapshot.restore(), shimSnapshot.restore())
-	}
 	configureMise := func() error {
 		fmt.Print("  Configuring mise............ ")
-		warning, err := applyMise(settings.Mise, libraryBinary, func(undo func() error) { rollback = append(rollback, undo) })
+		warning, err := applyMise(settings.Mise, binPath, func(undo func() error) { rollback = append(rollback, undo) })
 		if err != nil {
 			fmt.Println("FAILED")
 			return err
@@ -355,195 +229,85 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		return nil
 	}
-	// Disabling runs first: a legacy transition drops the ownership record that
-	// proves the gh-only shim is ours, and removal only touches an owned shim.
+	// Disabling runs before the proxy is replaced: removal only touches a
+	// gh-only shim whose ownership record is still in place.
 	if miseChanged && !settings.Mise {
 		if err := configureMise(); err != nil {
 			return err
 		}
 	}
-	// Native mode requires both the proxy and Git helper before it is persisted.
-	if settings.Native {
-		binPath, err := resolveBinaryPath()
-		if err != nil {
-			return err
+	// Native routing requires both the proxy and Git helper before it is persisted.
+	rollback = append(rollback, func() error {
+		if err := shims.CheckGHReplaceable(); err != nil {
+			return fmt.Errorf("cannot safely restore gh proxy: %w", err)
 		}
-		rollback = append(rollback, restoreProxy)
-		if _, err := shims.InstallNativeGH(binPath); err != nil {
-			return fmt.Errorf("cannot install native gh proxy: %w", err)
-		}
-		if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
-			return fmt.Errorf("cannot install required Git credential helper: %w", err)
-		}
-		if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
-			return fmt.Errorf("cannot configure required Git credential helper: %w", err)
-		}
-		credHelper = true
-	} else if cmd.Flags().Changed("native") {
-		realGH, err := ghauth.ResolveGHPath()
-		if err != nil {
-			return fmt.Errorf("cannot resolve real gh binary: %w", err)
-		}
-		binPath, err := resolveBinaryPath()
-		if err != nil {
-			return err
-		}
-		rollback = append(rollback, restoreProxy)
-		if _, err := shims.InstallGH(binPath, realGH); err != nil {
-			return fmt.Errorf("cannot restore legacy gh shim: %w", err)
-		}
+		return errors.Join(recordSnapshot.restore(), shimSnapshot.restore())
+	})
+	if _, err := shims.InstallNativeGH(binPath); err != nil {
+		return fmt.Errorf("cannot install native gh proxy: %w", err)
 	}
-
+	if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
+		return fmt.Errorf("cannot install required Git credential helper: %w", err)
+	}
+	if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
+		return fmt.Errorf("cannot configure required Git credential helper: %w", err)
+	}
 	if settings.Mise {
 		if err := configureMise(); err != nil {
 			return err
 		}
 	}
-
-	// 5. Install direnv shell library
 	if err := config.SaveSettings(settings); err != nil {
 		return fmt.Errorf("cannot save setup settings: %w", err)
 	}
 	rollback = append(rollback, settingsSnapshot.restore)
+
+	// 3. Put the shim directory first on PATH in the shell startup files.
 	fmt.Println()
-	fmt.Print("  Installing direnv lib....... ")
-	if err := direnvlib.InstallShellLib(libraryBinary, libraryGH); err != nil {
-		fmt.Println("FAILED")
-		return fmt.Errorf("cannot install shell library: %w", err)
-	}
-	rollback = append(rollback, libSnapshot.restore)
-	fmt.Println("OK")
-	fmt.Printf("    Installed: %s\n", libPath)
-
-	// 6. Install shell hook (wrapper mode support)
-	fmt.Print("  Installing shell hook....... ")
-	hookPath, err = direnvlib.InstallShellHook()
-	if err != nil {
-		fmt.Println("FAILED")
-		return fmt.Errorf("cannot install shell hook: %w", err)
-	}
-	rollback = append(rollback, hookSnapshot.restore)
-	fmt.Println("OK")
-	fmt.Printf("    Installed: %s\n", hookPath)
-
-	if installShim && !settings.Native && !cmd.Flags().Changed("native") {
-		fmt.Print("  Installing gh shim.......... ")
-		realGH, err := ghauth.ResolveGHPath()
-		if err != nil {
-			fmt.Println("FAILED")
-			return fmt.Errorf("cannot resolve real gh binary: %w", err)
-		}
-		binPath, err := resolveBinaryPath()
-		if err != nil {
-			fmt.Println("FAILED")
-			return err
-		}
-		shimPath, err := shims.InstallGH(binPath, realGH)
-		if err != nil {
-			fmt.Println("FAILED")
-			return fmt.Errorf("cannot install gh shim: %w", err)
-		}
-		fmt.Println("OK")
-		fmt.Printf("    Installed: %s\n", shimPath)
-	}
-
-	// 7. Inject hook source into shell RC file
-	fmt.Print("  Configuring shell RC........ ")
+	fmt.Print("  Configuring shell PATH...... ")
 	rcPath := ""
+	shimDir, err := shims.Dir()
+	if err != nil {
+		return err
+	}
 	if settings.ExternalShell {
 		fmt.Println("EXTERNAL (RC and PATH unchanged; integration not verified)")
-		fmt.Printf("    Source the installed hook through your shell manager: %s\n", hookPath)
-		if installShim {
-			shimDir, _ := shims.Dir()
-			fmt.Printf("    Ensure your externally managed PATH includes: %s\n", shimDir)
-		}
+		fmt.Printf("    Ensure your externally managed PATH puts %s before any other gh.\n", shimDir)
+	} else if rcPath, err = detectShellRC(); err != nil {
+		fmt.Println("SKIPPED")
+		fmt.Printf("    %v\n", err)
+		fmt.Printf("    Put %s before any other gh on PATH in your shell startup files.\n", shimDir)
+		allGood = false
+	} else if !shims.CheckPathBlockInstalled() && shimDirWinsForGH() {
+		// A user who already puts the shim first without our block manages PATH.
+		fmt.Println("OK (shim already first on PATH)")
 	} else {
-		rcPath, err = detectShellRC()
-		if err != nil {
-			fmt.Println("SKIPPED")
-			fmt.Printf("    %v\n", err)
-			fmt.Printf("    Add manually to your shell RC:\n")
-			fmt.Printf("      source \"%s\"\n", hookPath)
-			allGood = false
-		} else {
-			rcSnapshot, snapshotErr := snapshotSetupRC(rcPath)
-			if snapshotErr != nil {
-				fmt.Println("SKIPPED")
-				fmt.Printf("    Cannot snapshot shell RC: %v\n", snapshotErr)
-				allGood = false
-			} else {
-				rollback = append(rollback, rcSnapshot.restore)
-				if direnvlib.CheckShellHookInstalled() {
-					fmt.Println("OK (already configured)")
-				} else {
-					if err := direnvlib.InjectHookSource(rcPath, hookPath); err != nil {
-						fmt.Println("FAILED")
-						fmt.Printf("    %v\n", err)
-						fmt.Printf("    Add manually to %s:\n", rcPath)
-						fmt.Printf("      source \"%s\"\n", hookPath)
-						allGood = false
-					} else {
-						fmt.Println("OK")
-						fmt.Printf("    Added to: %s\n", rcPath)
-					}
-				}
-				// A user who already puts the shim first without our block manages PATH.
-				if installShim && (shims.CheckPathBlockInstalled() || !shimDirWinsForGH()) {
-					shimDir, err := shims.Dir()
-					if err != nil {
-						fmt.Printf("    Cannot resolve shim dir: %v\n", err)
-						allGood = false
-					} else {
-						for _, target := range []string{rcPath, loginProfile(rcPath)} {
-							if target == "" || shims.HasPathBlock(target) {
-								continue
-							}
-							if target != rcPath {
-								snapshot, snapErr := snapshotSetupRC(target)
-								if snapErr != nil {
-									fmt.Printf("    Cannot snapshot %s: %v\n", target, snapErr)
-									allGood = false
-									continue
-								}
-								rollback = append(rollback, snapshot.restore)
-							}
-							if err := shims.InjectPath(target, shimDir); err != nil {
-								fmt.Printf("    Cannot configure shim PATH in %s: %v\n", target, err)
-								allGood = false
-							}
-						}
-					}
-				}
+		configured := true
+		for _, target := range []string{rcPath, loginProfile(rcPath)} {
+			if target == "" || shims.HasPathBlock(target) {
+				continue
+			}
+			snapshot, snapErr := snapshotSetupRC(target)
+			if snapErr != nil {
+				fmt.Printf("\n    Cannot snapshot %s: %v", target, snapErr)
+				configured = false
+				continue
+			}
+			rollback = append(rollback, snapshot.restore)
+			if err := shims.InjectPath(target, shimDir); err != nil {
+				fmt.Printf("\n    Cannot configure shim PATH in %s: %v", target, err)
+				configured = false
 			}
 		}
-	}
-
-	// 8. Configure git credential helper (opt-in)
-	if credHelper && !settings.Native {
-		fmt.Println()
-		fmt.Print("  Configuring credential helper... ")
-		binPath, err := resolveBinaryPath()
-		if err != nil {
-			fmt.Println("FAILED")
-			return err
-		} else if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
-			fmt.Println("FAILED")
-			return fmt.Errorf("cannot install Git helper: %w", err)
-		} else if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
-			fmt.Println("FAILED")
-			return fmt.Errorf("cannot configure Git helper: %w", err)
-		} else {
+		if configured {
 			fmt.Println("OK")
-			fmt.Println("    Git will now use gh-autoaccount for GitHub credentials.")
-			fmt.Println("    This works in systemd timers, cron jobs, scripts, and IDEs.")
+		} else {
+			fmt.Println()
+			allGood = false
 		}
 	}
 
 	if settings.GitIdentity && !migrationRequested {
-		registry, err := config.LoadPins()
-		if err != nil {
-			return err
-		}
 		if err := gitidentity.Sync(registry); err != nil {
 			return err
 		}
@@ -556,83 +320,45 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		if err != nil {
 			fmt.Println("FAILED")
 			return fmt.Errorf("migration failed: %w", err)
-		} else {
-			fmt.Println("OK")
-			fmt.Printf("    Pins updated: %d, .envrc rewritten: %d, direnv allow: %d\n", report.PinsUpdated, report.EnvrcRewritten, report.Allowed)
-			for _, path := range report.ReviewRequired {
-				fmt.Printf("    Review required: %s (run direnv allow after reviewing the full file)\n", path)
-			}
-			for _, path := range report.WritabilityReview {
-				fmt.Printf("    Review required: %s (directory or original/rewritten .envrc permissions require manual review; run direnv allow after reviewing)\n", path)
-			}
-			for _, msg := range report.PermRepairsFailed {
-				fmt.Printf("    Warning: could not repair permissions on %s\n", msg)
-			}
-			if report.Warnings > 0 {
-				fmt.Printf("    Warnings: %d (missing/unwritable directories or manual .envrc review required)\n", report.Warnings)
-				allGood = false
-			}
+		}
+		fmt.Println("OK")
+		fmt.Printf("    Pins updated: %d\n", report.PinsUpdated)
+		for _, msg := range report.PermRepairsFailed {
+			fmt.Printf("    Warning: could not repair permissions on %s\n", msg)
+		}
+		if len(report.PermRepairsFailed) > 0 {
+			allGood = false
 		}
 	}
+	committed = true
 
-	// Summary
+	// Cleanup of retired files runs after the commit point: direnv deny cannot be
+	// rolled back, and native routing no longer depends on any of these files.
+	if !cleanupLegacy(registry, settings.ExternalShell) {
+		allGood = false
+	}
+
 	fmt.Println()
 	if allGood {
-		fmt.Println("  Setup complete! Pin accounts to directories with:")
-		fmt.Println("    gh autoaccount pin <username> --dir <path>")
-		fmt.Println()
-		fmt.Println("  Token mode:")
-		if settings.Native {
-			fmt.Println("    native             — gh proxy and Git HTTPS helper use registry pins; no shell wrappers")
-			fmt.Println("    export             — requires direnv; GH_TOKEN exported (use --export-token flag)")
-			fmt.Println("    Git identity       — separately opt-in with --git-identity")
-		} else {
-			fmt.Println("    wrapper            — deprecated; token injected per-command, never in env")
-			fmt.Println("    export             — deprecated; GH_TOKEN exported (use --export-token flag)")
-			if cmd.Flags().Changed("native") {
-				fmt.Println("    Git helper and managed identity settings are retained; the helper still routes HTTPS credentials via pins.")
-			}
-		}
-		if installShim && !settings.Native {
-			fmt.Println("    gh shim            - installed; requires PATH integration for plain gh")
-		}
-		if credHelper {
-			fmt.Println("    git helper         — plain git HTTPS uses the pinned account automatically")
-		}
-		fmt.Println()
-		if credHelper {
-			fmt.Println("  Credential helper:")
-			fmt.Println("    Git will resolve GitHub credentials from pins.yml automatically.")
-			fmt.Println("    Works in systemd timers, cron jobs, scripts, and IDEs.")
-			fmt.Println()
-		} else if !gitcred.CheckConfigured() {
-			fmt.Println("  Tip: Enable non-interactive auth (systemd, cron, IDEs) with:")
-			fmt.Println("    gh autoaccount setup --credential-helper")
-			fmt.Println()
-		}
-		if migrate {
-			fmt.Println("  Migration complete.")
-		}
-		if settings.ExternalShell {
-			fmt.Println("  External shell integration is not verified; reload it through your shell manager.")
-		} else if rcPath != "" {
-			fmt.Println("  Restart your shell or run: source " + rcPath)
-		}
+		fmt.Println("  Setup complete! Pin accounts with:")
 	} else {
-		fmt.Println("  Setup complete with warnings (see above).")
-		if cmd.Flags().Changed("native") && !settings.Native {
-			fmt.Println("  The Git helper and identity settings are retained; the helper still routes HTTPS credentials via pins.")
-		}
-		fmt.Println("  Fix the warnings, then pin accounts with:")
-		fmt.Println("    gh autoaccount pin <username> --dir <path>")
+		fmt.Println("  Setup complete with warnings (see above). Fix them, then pin accounts with:")
+	}
+	fmt.Println("    gh autoaccount pin <username> --dir <path>")
+	fmt.Println()
+	fmt.Println("  Plain gh and Git HTTPS now use the pinned account in every shell, including")
+	fmt.Println("  agents, editor tasks and scripts started from it.")
+	if migrate {
+		fmt.Println("  Migration complete.")
+	}
+	if settings.ExternalShell {
+		fmt.Println("  External shell integration is not verified; reload it through your shell manager.")
+	} else if rcPath != "" {
+		fmt.Println("  Restart your shell or run: source " + rcPath)
 	}
 
-	committed = true
 	if alias, _ := cmd.Flags().GetBool("alias"); alias {
-		realGH, err := ghauth.ResolveGHPath()
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not configure gh aa (%v); use gh autoaccount directly.\n", err)
-		} else if created, err := configureShortAlias(cmd.Context(), realGH); err != nil {
+		if created, err := configureShortAlias(cmd.Context(), helperRealGH); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not configure gh aa (%v); use gh autoaccount directly.\n", err)
 		} else if created {
 			fmt.Fprintln(cmd.OutOrStdout(), "Configured gh aa alias.")
@@ -659,39 +385,6 @@ func shimDirWinsForGH() bool {
 	got, gotErr := filepath.EvalSymlinks(filepath.Dir(resolved))
 	want, wantErr := filepath.EvalSymlinks(shimDir)
 	return gotErr == nil && wantErr == nil && got == want
-}
-
-// legacyDeprecation is shown wherever legacy (non-native) routing is active.
-const legacyDeprecation = "legacy wrapper routing is deprecated: it does not cover non-interactive shells (agents, editor tasks, cron). Run `gh autoaccount setup --native` to migrate."
-
-// nativeGHSupported is a seam for tests; legacy is the only mode where false.
-var nativeGHSupported = shims.NativeGHSupported
-
-// legacyNotice is empty where native routing is unavailable, so users are not
-// told to run a command that cannot succeed.
-func legacyNotice() string {
-	if !nativeGHSupported() {
-		return ""
-	}
-	return legacyDeprecation
-}
-
-// freshInstall reports whether no gh-autoaccount integration exists yet, so a
-// default can be chosen without changing an existing installation. Uncertainty
-// counts as installed: an unreadable path must never flip a legacy setup.
-// settings.yml is not consulted because `default` can create it before setup.
-func freshInstall() bool {
-	for _, locate := range []func() (string, error){config.PinsFilePath, direnvlib.ShellHookPath, direnvlib.ShellLibPath} {
-		path, err := locate()
-		if err != nil {
-			return false
-		}
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			return false
-		}
-	}
-	return !shims.IsGHInstalled() && !shims.IsNativeGHInstalled() && !gitcred.IsInstalled() &&
-		!direnvlib.CheckShellHookInstalled() && !shims.CheckPathBlockInstalled()
 }
 
 type setupFileSnapshot struct {
@@ -778,116 +471,114 @@ func (s setupFileSnapshot) restore() (retErr error) {
 
 type migrationReport struct {
 	PinsUpdated       int
-	EnvrcRewritten    int
-	Allowed           int
-	Warnings          int
-	ReviewRequired    []string
-	WritabilityReview []string
 	PermRepairsFailed []string
 }
 
 func runMigration() (migrationReport, error) {
 	var report migrationReport
-	settings, err := config.LoadSettings()
-	if err != nil {
-		return report, fmt.Errorf("cannot load setup settings: %w", err)
-	}
-
 	registry, err := config.LoadPins()
 	if err != nil {
 		return report, fmt.Errorf("cannot load pin registry: %w", err)
-	}
-	if settings.Native {
-		for _, pin := range registry.Pins {
-			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
-				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
-					return report, err
-				}
-			}
-		}
 	}
 
 	configDir, err := config.ConfigDir()
 	if err == nil {
 		if chmodErr := os.Chmod(configDir, 0700); chmodErr != nil {
-			report.Warnings++
 			report.PermRepairsFailed = append(report.PermRepairsFailed, fmt.Sprintf("%s (want 0700): %v", configDir, chmodErr))
 		}
 	}
 	if pinsPath, err := config.PinsFilePath(); err == nil {
 		if _, statErr := os.Stat(pinsPath); statErr == nil {
 			if chmodErr := os.Chmod(pinsPath, 0600); chmodErr != nil {
-				report.Warnings++
 				report.PermRepairsFailed = append(report.PermRepairsFailed, fmt.Sprintf("%s (want 0600): %v", pinsPath, chmodErr))
 			}
 		}
 	}
 
-	updatedMode := 0
+	// Export pins become native pins; an empty mode predates explicit modes.
 	for i := range registry.Pins {
-		if registry.Pins[i].Mode == "" {
+		if registry.Pins[i].Mode != config.ModeWrapper {
 			registry.Pins[i].Mode = config.ModeWrapper
-			updatedMode++
+			report.PinsUpdated++
 		}
 	}
-	report.PinsUpdated = updatedMode
 	if err := savePinsAndIdentity(registry); err != nil {
 		return report, fmt.Errorf("cannot migrate pins and Git identity: %w", err)
 	}
-
-	for _, pin := range registry.Pins {
-		if pin.IsOwner() {
-			continue
-		}
-		if _, err := os.Stat(pin.Dir); err != nil {
-			report.Warnings++
-			continue
-		}
-		if settings.Native && pin.EffectiveMode() == config.ModeWrapper {
-			continue
-		}
-		hasUnmanagedContent, err := direnvlib.HasUnmanagedEnvrcContent(pin.Dir)
-		if err != nil {
-			report.Warnings++
-			report.ReviewRequired = append(report.ReviewRequired, filepath.Join(pin.Dir, ".envrc"))
-			continue
-		}
-
-		autoAllowBefore, autoAllowErr := direnvlib.AutoAllowSafe(pin.Dir)
-		snapshot, err := direnvlib.WriteEnvrcSnapshot(pin)
-		if err != nil {
-			report.Warnings++
-			continue
-		}
-		report.EnvrcRewritten++
-		if hasUnmanagedContent {
-			report.Warnings++
-			report.ReviewRequired = append(report.ReviewRequired, filepath.Join(pin.Dir, ".envrc"))
-			continue
-		}
-
-		// Recheck after rewriting, without forgetting unsafe original permissions.
-		if direnvlib.HasUnmanagedContent(snapshot) {
-			report.Warnings++
-			report.ReviewRequired = append(report.ReviewRequired, filepath.Join(pin.Dir, ".envrc"))
-			continue
-		}
-		autoAllowAfter, gateErr := direnvlib.AutoAllowSafe(pin.Dir)
-		if autoAllowErr != nil || !autoAllowBefore || gateErr != nil || !autoAllowAfter {
-			report.Warnings++
-			report.WritabilityReview = append(report.WritabilityReview, filepath.Join(pin.Dir, ".envrc"))
-			continue
-		}
-
-		if err := direnvlib.AllowSnapshot(pin.Dir, snapshot); err != nil {
-			report.Warnings++
-			report.ReviewRequired = append(report.ReviewRequired, filepath.Join(pin.Dir, ".envrc"))
-			continue
-		}
-		report.Allowed++
-	}
-
 	return report, nil
+}
+
+// cleanupLegacy removes what the retired direnv modes left behind and reports
+// each step. It returns false when something needs the user's attention.
+func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
+	var cleaned int
+	var review []string
+	for _, pin := range registry.Pins {
+		if pin.IsOwner() || !legacy.HasManagedEnvrc(pin.Dir) {
+			continue
+		}
+		if ok, err := legacy.CleanupManagedEnvrc(pin.Dir); err != nil {
+			review = append(review, fmt.Sprintf("%s: %v", filepath.Join(pin.Dir, ".envrc"), err))
+		} else if ok {
+			cleaned++
+		}
+	}
+	var sourcedBy []string
+	if rcFiles, err := legacy.RCFiles(); err == nil {
+		for _, rc := range rcFiles {
+			if !externalShell && legacy.HasHookSource(rc) {
+				if _, err := legacy.RemoveHookSource(rc); err != nil {
+					review = append(review, fmt.Sprintf("%s: %v", rc, err))
+				} else {
+					cleaned++
+				}
+			}
+			// A line outside the managed block still sources the hook.
+			if legacy.ReferencesHook(rc) {
+				sourcedBy = append(sourcedBy, rc)
+			}
+		}
+	}
+	if removed, err := legacy.RemoveLibrary(); err != nil {
+		review = append(review, err.Error())
+	} else if removed {
+		cleaned++
+	}
+	hookPath, _ := legacy.ShellHookPath()
+	keptHook := ""
+	if _, err := os.Lstat(hookPath); err == nil {
+		if externalShell || len(sourcedBy) > 0 {
+			// Deleting a file a shell still sources would break shell startup.
+			keptHook = hookPath
+		} else if removed, err := legacy.RemoveHook(); err != nil {
+			review = append(review, err.Error())
+		} else if removed {
+			cleaned++
+		}
+	}
+	clean := len(review) == 0 && keptHook == ""
+	if cleaned == 0 && clean {
+		return true
+	}
+	fmt.Print("  Removing legacy files....... ")
+	if clean {
+		fmt.Println("OK")
+	} else {
+		fmt.Println("REVIEW")
+	}
+	if cleaned > 0 {
+		fmt.Printf("    Removed %d legacy item(s); restart open shells to drop old wrappers and exports.\n", cleaned)
+	}
+	for _, item := range review {
+		fmt.Printf("    Review required: %s\n", item)
+	}
+	if keptHook != "" {
+		fmt.Printf("    Remove the line that sources %s from your shell config, then delete that file.\n", keptHook)
+		if len(sourcedBy) > 0 {
+			fmt.Printf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
+		}
+	}
+	return clean
 }
 
 // loginProfile returns the login-shell startup file for an interactive RC
