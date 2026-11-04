@@ -635,7 +635,13 @@ func shimDirWinsForGH() bool {
 		return false
 	}
 	resolved, err := exec.LookPath("gh")
-	return err == nil && filepath.Dir(resolved) == shimDir
+	if err != nil {
+		return false
+	}
+	// Compare physical directories: HOME or PATH entries may be symlinked spellings.
+	got, gotErr := filepath.EvalSymlinks(filepath.Dir(resolved))
+	want, wantErr := filepath.EvalSymlinks(shimDir)
+	return gotErr == nil && wantErr == nil && got == want
 }
 
 // legacyDeprecation is shown wherever legacy (non-native) routing is active.

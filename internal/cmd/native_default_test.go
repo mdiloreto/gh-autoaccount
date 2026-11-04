@@ -81,16 +81,27 @@ func TestFreshSetupIgnoresShimDirOnProcessPath(t *testing.T) {
 func TestFreshSetupAddsPathBlockWhenShimDirIsShadowed(t *testing.T) {
 	requireNativeSupport(t)
 	for _, tc := range []struct {
-		name      string
-		shimFirst bool
-		wantBlock bool
+		name                 string
+		shimFirst, symlinked bool
+		wantBlock            bool
 	}{
-		{"shim dir after another gh", false, true},
-		{"shim dir already first", true, false},
+		{"shim dir after another gh", false, false, true},
+		{"shim dir already first", true, false, false},
+		{"shim dir first through a symlinked spelling", true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := onboardingHome(t)
 			shimDir := filepath.Join(home, ".local", "bin")
+			if tc.symlinked {
+				if err := os.MkdirAll(shimDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				alias := filepath.Join(t.TempDir(), "home-alias")
+				if err := os.Symlink(home, alias); err != nil {
+					t.Fatal(err)
+				}
+				shimDir = filepath.Join(alias, ".local", "bin")
+			}
 			if tc.shimFirst {
 				t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			} else {
