@@ -478,7 +478,11 @@ when an argument names a repository under another owner (a positional
 is unknown: owner routing is skipped for that command and the directory pin or
 default applies. `gh api` routes only by its own endpoint: a `repos/OWNER/REPO`
 path on its `--hostname` host, or `{owner}` placeholders resolved like gh's base
-repository on the same host; GraphQL and other endpoints get no owner routing. Put `-R` before other flags or right after a
+repository on the same host; GraphQL and other endpoints get no owner routing.
+For `gh`, owner routing is a best-effort reading of the command line, not a
+sandbox: a command can still reach repositories its arguments do not name. The
+Git HTTPS helper routes exactly by Git's request, and no path sends a pin's
+credential to a host other than the pin's. Put `-R` before other flags or right after a
 positional argument to route by it. `exec --require-pin` accepts an owner or a
 directory pin.
 
