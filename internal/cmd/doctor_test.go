@@ -50,7 +50,7 @@ func TestDoctorNativeRequiredIntegrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = captureOnboarding(t, NewDoctorCmd().Execute)
-	if !strings.Contains(out, "OK   git credential helper installed") || !strings.Contains(out, "helper target executable is not verified") {
+	if !strings.Contains(out, "OK   git credential helper installed") || !strings.Contains(out, "OK   git credential helper target: "+exe) {
 		t.Fatal(out)
 	}
 	path := filepath.Join(home, ".local", "bin", "gh")
@@ -98,5 +98,58 @@ func TestDoctorEnterpriseHostHelperCoverage(t *testing.T) {
 	}
 	if strings.Contains(out, broker) || strings.Contains(out, "sensitive-token") {
 		t.Fatalf("credential detail leaked: %s", out)
+	}
+}
+
+// Beta.1 installs pointed the proxy and helper into a cache directory that
+// disappears when gh replaces the extension with a binary install.
+func TestDoctorReportsAndMigrationRepairsVanishedExtensionTarget(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	home := onboardingHome(t)
+	old := filepath.Join(home, "data", "gh", "extensions", "gh-autoaccount", ".autoaccount-cache", "v0.1.0-beta.1-linux-amd64", "gh-autoaccount")
+	if err := os.MkdirAll(filepath.Dir(old), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	command := NewSetupCmd()
+	command.SetArgs([]string{"--native", "--no-shell-rc"})
+	captureOnboarding(t, command.Execute)
+	if _, err := shims.InstallNativeGH(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitcred.Install(old, filepath.Join(home, "bin", "gh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(filepath.Dir(old))); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOnboarding(t, NewDoctorCmd().Execute)
+	for _, want := range []string{"WARN required native gh proxy missing, broken, or unmanaged", "WARN git credential helper target is missing or not executable: " + old} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %s", want, out)
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctor := NewDoctorCmd()
+	doctor.SetArgs([]string{"--fix"})
+	captureOnboarding(t, doctor.Execute)
+	target, err := gitcred.Target()
+	if err != nil || target != exe {
+		t.Fatalf("helper target = %q, %v; want %q", target, err, exe)
+	}
+	link, err := os.Readlink(filepath.Join(home, ".local", "bin", "gh"))
+	if err != nil || link != exe {
+		t.Fatalf("shim target = %q, %v; want %q", link, err, exe)
 	}
 }
