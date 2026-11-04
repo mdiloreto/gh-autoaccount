@@ -6,7 +6,16 @@ set -euo pipefail
 candidate=$1
 gh_bin=${GH_AUTOPROFILE_TEST_GH:-/usr/bin/gh}
 [[ $gh_bin == /* && -x $gh_bin ]] || { echo 'absolute real gh executable required' >&2; exit 2; }
-for tool in /usr/bin/git /usr/bin/bash /usr/bin/env /usr/bin/jq; do [[ -x $tool ]] || { echo "missing $tool" >&2; exit 2; }; done
+# The smoke shell runs with PATH=/usr/bin:/bin, so its tools must live there
+# (Alpine keeps bash in /bin).
+tool_path() {
+  local dir
+  for dir in /usr/bin /bin; do [[ -x $dir/$1 ]] && { printf '%s\n' "$dir/$1"; return 0; }; done
+  echo "missing $1 in /usr/bin or /bin" >&2
+  exit 2
+}
+for tool in git env jq; do tool_path "$tool" > /dev/null; done
+bash_bin=$(tool_path bash)
 root=$(mktemp -d "${TMPDIR:-/tmp}/gh-onboarding.XXXXXX")
 trap 'rm -rf -- "$root"' EXIT
 env -i PATH=/usr/bin:/bin HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
@@ -15,7 +24,7 @@ env -i PATH=/usr/bin:/bin HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
   GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false GH_PROMPT_DISABLED=1 \
   GH_NO_UPDATE_NOTIFIER=1 GH_NO_EXTENSION_UPDATE_NOTIFIER=1 DBUS_SESSION_BUS_ADDRESS="unix:path=$root/no-bus" \
   HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1 NO_PROXY= \
-  LC_ALL=C TZ=UTC TMPDIR="$root" /usr/bin/bash --noprofile --norc -s -- "$candidate" "$root" "$gh_bin" <<'SMOKE'
+  LC_ALL=C TZ=UTC TMPDIR="$root" "$bash_bin" --noprofile --norc -s -- "$candidate" "$root" "$gh_bin" <<'SMOKE'
 set -euo pipefail
 candidate=$1 root=$2 realgh=$3
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

@@ -727,7 +727,45 @@ func TestExternalShellSetupMigration(t *testing.T) {
 	}
 }
 
+// requireAutoAllowEnvironment skips where direnv auto-allow fails closed by
+// design for the test's temporary paths: a filesystem whose ACLs cannot be
+// inspected (overlayfs, ZFS) or group-writable directories (umask 002). CI sets
+// GH_AUTOPROFILE_REQUIRE_DIRENV_2382=1, which turns the skip into a failure.
+// Call it before onboardingHome, which then replaces the probe's environment.
+func requireAutoAllowEnvironment(t *testing.T) {
+	t.Helper()
+	probe := t.TempDir()
+	bin, repo := filepath.Join(probe, "bin"), filepath.Join(probe, "repo")
+	for _, dir := range []string{bin, repo} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "direnv"), []byte("#!/bin/sh\n[ \"$1\" = version ] && printf '2.38.2\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("# gh-autoprofile:start\nexport AUTO_ALLOW_PROBE=1\n# gh-autoprofile:end\n")
+	if err := os.WriteFile(filepath.Join(repo, ".envrc"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", probe)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(probe, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(probe, "config"))
+	t.Setenv("DIRENV_CONFIG", filepath.Join(probe, "direnv"))
+	t.Setenv("DIRENV_REQUIRED", "")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := direnvlib.AllowSnapshot(repo, data)
+	if err == nil || !strings.Contains(err.Error(), "unsupported filesystem for ACL inspection") && !strings.Contains(err.Error(), "unsafe data path component") {
+		return
+	}
+	if os.Getenv("GH_AUTOPROFILE_REQUIRE_DIRENV_2382") == "1" {
+		t.Fatalf("auto-allow must work in this environment: %v", err)
+	}
+	t.Skipf("direnv auto-allow fails closed here by design: %v", err)
+}
+
 func TestRunMigrationRequiresReviewForUnmanagedEnvrc(t *testing.T) {
+	requireAutoAllowEnvironment(t)
 	home := onboardingHome(t)
 	managed := filepath.Join(home, "managed")
 	unmanaged := filepath.Join(home, "unmanaged")
@@ -794,6 +832,7 @@ func TestAutoAllowCommandsRejectSharedCheckout(t *testing.T) {
 			{name: "initially shared envrc", dirPerm: 0700, envrcPerm: 0664},
 		} {
 			t.Run(operation+"/"+tc.name, func(t *testing.T) {
+				requireAutoAllowEnvironment(t)
 				home := onboardingHome(t)
 				if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
 					t.Fatal(err)
@@ -873,6 +912,7 @@ func TestRunPinOnlyAutoAllowsManagedEnvrc(t *testing.T) {
 		{name: "unmanaged content", customContent: true, wantAllow: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			requireAutoAllowEnvironment(t)
 			home := onboardingHome(t)
 			if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
 				t.Fatal(err)
