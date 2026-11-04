@@ -196,6 +196,12 @@ schema, and managed `.envrc` permissions. Common warnings:
 - **Git credential helper not configured, or its target is missing**: run
   `gh autoaccount setup` again (or `setup --migrate` after an upgrade, which repoints
   the shim and helper at the installed binary).
+- **Git HTTPS fails after `gh` was upgraded or uninstalled** (for example by a
+  version manager such as mise removing the version you ran `setup` with): Git
+  reports `cannot resolve selected pin credential: GH_PATH <path> no longer exists
+  (was gh upgraded or uninstalled?); refresh with: gh autoaccount setup --migrate`,
+  and `doctor` shows `WARN git credential helper gh is missing or not executable:
+  <path>`. Run `gh autoaccount setup --migrate` after upgrading or uninstalling `gh`.
 - **`useHttpPath` is not true**: only reported for hosts with owner pins; `doctor
   --fix` restores it.
 - **Pins missing a mode, or `.envrc` files not 0600**: `doctor --fix`.
