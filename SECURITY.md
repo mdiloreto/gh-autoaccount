@@ -18,9 +18,13 @@ In scope — a fix is expected if broken:
 - wrapper-mode tokens live only in child processes, never in the parent shell
 - generated shims, hooks, and helper scripts quote interpolated paths literally
 - account activation fails closed instead of falling back to another account
-- canonical physical directory pins and `(host, user)` select credentials;
-  repository content and remote metadata do not select them. Git HTTPS, SSH, and
-  commit identity are separate boundaries
+- pins are the only source of accounts: canonical physical directory pins and
+  `(host, user)` select credentials. With owner pins, the repository URL being
+  accessed (credential path, `-R`/`GH_REPO`, clone target, or a checkout's remotes
+  and submodules) chooses among them, and credentials are returned only for the
+  pin's exact host; a checkout's submodule under an owner-pinned organization
+  therefore fetches as that account. Git HTTPS, SSH, and commit identity are
+  separate boundaries
 - native `gh` receives only the selected host class's primary token variable;
   explicit `exec` opts its child into that class's primary/fallback pair after
   conflicting token and host variables are removed. These variables are scoped by

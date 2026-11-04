@@ -211,7 +211,7 @@ func TestNativePinHelperFailureRestoresRegistryAndEnvrc(t *testing.T) {
 		t.Fatal(err)
 	}
 	for host, values := range beforeHelpers {
-		if strings.Join(values, "\n") != strings.Join(afterHelpers[host], "\n") {
+		if !reflect.DeepEqual(values, afterHelpers[host]) {
 			t.Fatalf("helper changed for %s: %v", host, afterHelpers[host])
 		}
 	}
@@ -282,7 +282,7 @@ func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			for host, before := range beforeHelpers {
-				if strings.Join(before, "\n") != strings.Join(afterHelpers[host], "\n") {
+				if !reflect.DeepEqual(before, afterHelpers[host]) {
 					t.Fatalf("helper changed for %s: %v", host, afterHelpers[host])
 				}
 			}

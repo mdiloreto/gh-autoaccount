@@ -214,16 +214,34 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load pins: %w", err)
 	}
+	if settings.GitIdentity {
+		if err := gitidentity.CheckOwnerIdentitySupport(registry); err != nil {
+			fmt.Printf("WARN %v\n", err)
+			issues++
+		}
+	}
 	if gitcred.CheckConfigured() || settings.Native {
 		hosts, err := gitcred.Hosts(registry)
 		if err != nil {
 			return fmt.Errorf("cannot inspect pin hosts: %w", err)
+		}
+		pathHosts, err := gitcred.OwnerHosts(registry)
+		if err != nil {
+			return fmt.Errorf("cannot inspect owner pin hosts: %w", err)
+		}
+		needsPath := map[string]bool{}
+		for _, host := range pathHosts {
+			needsPath[host] = true
 		}
 		configured := true
 		for _, host := range hosts {
 			if !gitcred.CheckConfiguredHost(host) {
 				configured = false
 				fmt.Printf("WARN git credential helper not configured for %s\n", host)
+				issues++
+			} else if needsPath[host] && !gitcred.CheckUseHTTPPathHost(host) {
+				configured = false
+				fmt.Printf("WARN git credential.https://%s.useHttpPath is not true (owner pins need request paths)\n", host)
 				issues++
 			}
 		}
@@ -241,6 +259,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	for _, pin := range registry.Pins {
 		if pin.Mode == "" {
 			missingModes++
+		}
+		if pin.IsOwner() {
+			continue
 		}
 		envrcPath := filepath.Join(pin.Dir, ".envrc")
 		if fi, err := os.Stat(envrcPath); err == nil {

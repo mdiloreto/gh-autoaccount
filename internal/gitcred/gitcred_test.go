@@ -279,6 +279,137 @@ func TestCheckConfiguredMatchesCurrentAndLegacyEntries(t *testing.T) {
 	}
 }
 
+func isolatedGlobalGit(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "gitconfig"))
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+}
+
+func TestConfigureHostsEnablesUseHTTPPathAndRestoresPriorValues(t *testing.T) {
+	isolatedGlobalGit(t)
+	hosts := []string{"ghe.example.com", "github.com", "other.example.com"}
+	// Prior state: explicit false, absent, and an unrelated setting that must survive.
+	if err := replaceGlobalValues(useHTTPPathKey("github.com"), []string{"false"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceGlobalValues(useHTTPPathKey("other.example.com"), []string{"yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceGlobalValues("user.name", []string{"Unrelated"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range hosts {
+		if CheckUseHTTPPathHost(host) && host != "other.example.com" {
+			t.Fatalf("%s unexpectedly enabled before configuration", host)
+		}
+	}
+	snapshot, err := SnapshotHosts(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigureHosts(hosts, hosts...); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range hosts {
+		if !CheckUseHTTPPathHost(host) {
+			t.Fatalf("useHttpPath missing for %s", host)
+		}
+		got, err := globalValues(useHTTPPathKey(host))
+		if err != nil || len(got) != 1 || got[0] != "true" {
+			t.Fatalf("%s useHttpPath = %q (%v), want exactly one true", host, got, err)
+		}
+	}
+	// Reconfiguring is idempotent and does not duplicate entries.
+	if err := ConfigureHosts(hosts, hosts...); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := globalValues(useHTTPPathKey("github.com")); len(got) != 1 {
+		t.Fatalf("duplicate useHttpPath entries: %q", got)
+	}
+	if err := RestoreHosts(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string][]string{"github.com": {"false"}, "other.example.com": {"yes"}, "ghe.example.com": nil} {
+		got, err := globalValues(useHTTPPathKey(host))
+		if err != nil || strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s restored to %q (%v), want %q", host, got, err, want)
+		}
+	}
+	if got, _ := globalValues("user.name"); len(got) != 1 || got[0] != "Unrelated" {
+		t.Fatalf("unrelated config changed: %q", got)
+	}
+	if CheckUseHTTPPathHost("github.com") || CheckUseHTTPPathHost("not a host") {
+		t.Fatal("check reports enabled after restore or for an invalid host")
+	}
+}
+
+func TestConfigureHostsLeavesUseHTTPPathAloneWithoutOwnerPins(t *testing.T) {
+	isolatedGlobalGit(t)
+	if err := replaceGlobalValues(useHTTPPathKey("github.com"), []string{"false"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigureHosts([]string{"github.com", "ghe.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]string{"github.com": "false", "ghe.example.com": ""} {
+		got, err := globalValues(useHTTPPathKey(host))
+		if err != nil || strings.Join(got, ",") != want {
+			t.Fatalf("%s useHttpPath = %q (%v), want %q", host, got, err, want)
+		}
+	}
+	// Enabling is limited to the named hosts, and later calls never unset it.
+	if err := ConfigureHosts([]string{"github.com", "ghe.example.com"}, "ghe.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if CheckUseHTTPPathHost("github.com") || !CheckUseHTTPPathHost("ghe.example.com") {
+		t.Fatal("useHttpPath enabled on the wrong hosts")
+	}
+	if err := ConfigureHosts([]string{"github.com", "ghe.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if !CheckUseHTTPPathHost("ghe.example.com") {
+		t.Fatal("a later configure without owner pins unset useHttpPath")
+	}
+}
+
+func TestOwnerHosts(t *testing.T) {
+	hosts, err := OwnerHosts(&config.PinRegistry{Pins: []config.Pin{{Dir: "/a", User: "a"}, {Owner: "o", User: "b"}, {Owner: "p", User: "c", Host: "GHE.example.com"}}})
+	if err != nil || strings.Join(hosts, ",") != "github.com,ghe.example.com" {
+		t.Fatalf("%v %v", hosts, err)
+	}
+}
+
+func TestOverwritingExplicitFalseIsAnnounced(t *testing.T) {
+	isolatedGlobalGit(t)
+	if err := replaceGlobalValues(useHTTPPathKey("github.com"), []string{"false"}); err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	err = ConfigureHosts([]string{"github.com", "ghe.example.com"}, "github.com", "ghe.example.com")
+	os.Stderr = old
+	w.Close()
+	var buf [1024]byte
+	n, _ := r.Read(buf[:])
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(buf[:n])
+	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "credential.https://github.com.useHttpPath=false") {
+		t.Fatalf("want exactly one overwrite note for github.com, got %q", out)
+	}
+}
+
 func TestTargetRoundTripsQuotedPath(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
 	want := "/opt/it's here/gh-autoaccount"

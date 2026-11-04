@@ -208,26 +208,7 @@ func VerifyTokenIdentity(ctx context.Context, user, host, token string) error {
 	return nil
 }
 
-func validLogin(user string) bool {
-	if len(user) == 0 || len(user) > 39 {
-		return false
-	}
-	base, shortcode, managed := strings.Cut(user, "_")
-	if base == "" || base[0] == '-' || base[len(base)-1] == '-' || strings.Contains(base, "--") || managed && shortcode == "" {
-		return false
-	}
-	for _, c := range base {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
-			return false
-		}
-	}
-	for _, c := range shortcode {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
-			return false
-		}
-	}
-	return true
-}
+func validLogin(user string) bool { return config.ValidLogin(user) }
 
 // GetTokenWithFallbackForHost considers only the ambient pair for the selected host class.
 func GetTokenWithFallbackForHost(ctx context.Context, request TokenRequest) (string, string, error) {

@@ -92,7 +92,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("cannot load pin registry: %w", err)
 		}
 		for _, pin := range registry.Pins {
-			if pin.EffectiveMode() == config.ModeWrapper {
+			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
 				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
 					return err
 				}
@@ -216,7 +216,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	var shimSnapshot, recordSnapshot, helperSnapshot, settingsSnapshot, libSnapshot, hookSnapshot setupFileSnapshot
 	var rollback []func() error
 	var priorHelpers gitcred.HelperSnapshot
-	var helperHosts []string
+	var helperHosts, helperPathHosts []string
 	var helperRealGH string
 	configDir, err := config.ConfigDir()
 	if err != nil {
@@ -261,6 +261,9 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		helperHosts, err = gitcred.Hosts(registry)
 		if err != nil {
+			return err
+		}
+		if helperPathHosts, err = gitcred.OwnerHosts(registry); err != nil {
 			return err
 		}
 		priorHelpers, err = gitcred.SnapshotHosts(helperHosts)
@@ -323,7 +326,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
 			return fmt.Errorf("cannot install required Git credential helper: %w", err)
 		}
-		if err := gitcred.ConfigureHosts(helperHosts); err != nil {
+		if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
 			return fmt.Errorf("cannot configure required Git credential helper: %w", err)
 		}
 		credHelper = true
@@ -454,7 +457,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		} else if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
 			fmt.Println("FAILED")
 			return fmt.Errorf("cannot install Git helper: %w", err)
-		} else if err := gitcred.ConfigureHosts(helperHosts); err != nil {
+		} else if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
 			fmt.Println("FAILED")
 			return fmt.Errorf("cannot configure Git helper: %w", err)
 		} else {
@@ -673,7 +676,7 @@ func runMigration() (migrationReport, error) {
 	}
 	if settings.Native {
 		for _, pin := range registry.Pins {
-			if pin.EffectiveMode() == config.ModeWrapper {
+			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
 				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
 					return report, err
 				}
@@ -710,6 +713,9 @@ func runMigration() (migrationReport, error) {
 	}
 
 	for _, pin := range registry.Pins {
+		if pin.IsOwner() {
+			continue
+		}
 		if _, err := os.Stat(pin.Dir); err != nil {
 			report.Warnings++
 			continue

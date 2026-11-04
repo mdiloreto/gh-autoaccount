@@ -16,7 +16,8 @@ type pinDiagnostics struct {
 	User                   string         `json:"user"`
 	Host                   string         `json:"host"`
 	TokenCommandConfigured bool           `json:"token_command_configured"`
-	Directory              string         `json:"directory"`
+	Directory              string         `json:"directory,omitempty"`
+	Owner                  string         `json:"owner,omitempty"`
 	Mode                   config.PinMode `json:"mode"`
 	GitName                string         `json:"git_name,omitempty"`
 	GitEmail               string         `json:"git_email,omitempty"`
@@ -32,7 +33,7 @@ func describePin(pin *config.Pin) *pinDiagnostics {
 		host = "(invalid)"
 	}
 	return &pinDiagnostics{
-		User: pin.User, Directory: pin.Dir, Mode: pin.EffectiveMode(),
+		User: pin.User, Directory: pin.Dir, Owner: pin.Owner, Mode: pin.EffectiveMode(),
 		Host: host, TokenCommandConfigured: pin.TokenCommand != "",
 		GitName: pin.GitName, GitEmail: pin.GitEmail, SSHKey: pin.SSHKey,
 	}
@@ -69,14 +70,17 @@ type gitDiagnostics struct {
 }
 
 type statusDiagnostics struct {
-	SchemaVersion   int                       `json:"schema_version"`
-	Directory       string                    `json:"directory"`
-	SelectedUser    string                    `json:"selected_user"`
-	SelectionSource string                    `json:"selection_source"`
-	Pin             *pinDiagnostics           `json:"pin"`
-	Environment     environmentDiagnostics    `json:"environment"`
-	Authentication  authenticationDiagnostics `json:"authentication"`
-	Git             gitDiagnostics            `json:"git"`
+	SchemaVersion   int             `json:"schema_version"`
+	Directory       string          `json:"directory"`
+	SelectedUser    string          `json:"selected_user"`
+	SelectionSource string          `json:"selection_source"`
+	Pin             *pinDiagnostics `json:"pin"`
+	// ConflictingOwnerPins lists owner pins matched by remotes whose Git identity
+	// can disagree with the selected credentials.
+	ConflictingOwnerPins []string                  `json:"conflicting_owner_pins,omitempty"`
+	Environment          environmentDiagnostics    `json:"environment"`
+	Authentication       authenticationDiagnostics `json:"authentication"`
+	Git                  gitDiagnostics            `json:"git"`
 }
 
 func diagnosticsPreRun(cmd *cobra.Command, args []string) error {
@@ -111,23 +115,24 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("target directory does not exist or is not accessible; check --dir")
 	}
-	registry, err := config.LoadPins()
-	if err != nil {
+	if _, err := config.LoadPins(); err != nil {
 		return nil, diagnosticConfigError("pin registry", "pins.yml", err)
 	}
-	pin, err := registry.FindPinStrict(dir)
-	if err != nil {
-		return nil, fmt.Errorf("cannot select directory pin: %w", err)
-	}
-	settings, err := config.LoadSettings()
-	if err != nil {
+	if _, err := config.LoadSettings(); err != nil {
 		return nil, diagnosticConfigError("setup settings", "settings.yml", err)
 	}
+	// One resolution selects the pin and reads remotes with a single git process.
+	ctx, err := profileexec.ResolveContextWithPolicy(absDir, profileexec.Policy{Repo: &profileexec.RepoQuery{GH: true, Conflicts: true}})
+	if ctx == nil {
+		return nil, fmt.Errorf("cannot select directory pin: %w", err)
+	}
 	result := &statusDiagnostics{
-		SchemaVersion:   1,
-		Directory:       absDir,
-		SelectionSource: "none",
-		Pin:             describePin(pin),
+		SchemaVersion:        1,
+		Directory:            absDir,
+		SelectionSource:      "none",
+		Pin:                  describePin(ctx.Pin),
+		SelectedUser:         ctx.SelectedUser,
+		ConflictingOwnerPins: ctx.OwnerConflicts,
 		Environment: environmentDiagnostics{
 			ProfileUser: os.Getenv("GH_AUTOPROFILE_USER"), ProfileMode: os.Getenv("GH_AUTOPROFILE_MODE"),
 			ProfileHost:    os.Getenv("GH_AUTOPROFILE_HOST"),
@@ -137,12 +142,9 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 		Authentication: authenticationDiagnostics{Source: "default"},
 		Git:            inspectGit(absDir),
 	}
-	if pin != nil {
-		result.SelectedUser, result.SelectionSource = pin.User, "pin"
-	} else if settings.DefaultUser != "" {
-		result.SelectedUser, result.SelectionSource = settings.DefaultUser, "default"
+	if ctx.SelectedUser != "" {
+		result.SelectionSource = ctx.SelectionSource
 	}
-	ctx, err := profileexec.ResolveContext(absDir, false)
 	if err != nil {
 		result.Authentication.Selected = result.SelectedUser != ""
 		result.Authentication.Source = "unavailable"
@@ -151,7 +153,6 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 		}
 		return result, nil
 	}
-	result.Pin = describePin(ctx.Pin)
 	if ctx.SelectedUser != "" {
 		result.Authentication.Selected = true
 		result.Authentication.Source = ctx.TokenSource

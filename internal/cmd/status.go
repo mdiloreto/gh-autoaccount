@@ -57,13 +57,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	cmd.Printf("Directory: %s\n", sanitizeStatusValue(cwd))
 	cmd.Println()
 
+	if len(diagnostics.ConflictingOwnerPins) > 0 {
+		cmd.Printf("WARN: remotes of this checkout match owner pins (%s) that credentials may not follow.\n", sanitizeStatusValue(strings.Join(diagnostics.ConflictingOwnerPins, ", ")))
+		cmd.Println("      Git identity matches every remote URL but credentials follow one selection, so they can disagree.")
+		cmd.Println()
+	}
+
 	// Pinned account
 	if pin != nil {
 		cmd.Printf("  Pinned account:   %s\n", sanitizeStatusValue(pin.User))
 		cmd.Printf("  Host:             %s\n", sanitizeStatusValue(pin.Host))
 		cmd.Printf("  Token command configured: %t\n", pin.TokenCommandConfigured)
 		cmd.Printf("  Token mode:       %s\n", sanitizeStatusValue(string(pin.Mode)))
-		if pin.Directory != cwd {
+		if pin.Owner != "" {
+			cmd.Printf("  Pinned owner:     %s\n", sanitizeStatusValue(pin.Owner))
+		} else if pin.Directory != cwd {
 			cmd.Printf("  Pinned directory: %s\n", sanitizeStatusValue(pin.Directory))
 		}
 		if pin.GitEmail != "" {
@@ -212,7 +220,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Diagnostics
 	cmd.Println()
-	if pin != nil {
+	if pin != nil && pin.Owner != "" {
+		cmd.Println("  Owner pin: selected per command from the accessed repository's owner; it outranks directory pins.")
+		if helperConfigured {
+			cmd.Println("  Plain git HTTPS uses the built-in gh-autoaccount credential helper.")
+		}
+	} else if pin != nil {
 		mode := pin.Mode
 		if mode == config.ModeWrapper {
 			if settings.Native {

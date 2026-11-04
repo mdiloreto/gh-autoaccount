@@ -122,7 +122,29 @@ func Hosts(registry *config.PinRegistry) ([]string, error) {
 	return result, nil
 }
 
-type HelperSnapshot map[string][]string
+// OwnerHosts returns the normalized hosts that have an owner pin, the only
+// hosts where useHttpPath is needed.
+func OwnerHosts(registry *config.PinRegistry) ([]string, error) {
+	var hosts []string
+	for _, pin := range registry.Pins {
+		if !pin.IsOwner() {
+			continue
+		}
+		host, err := config.NormalizeHost(pin.Host)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
+// HelperSnapshot records, per host, every global value this package manages in
+// the host's credential section, so rollback restores exactly what existed.
+type HelperSnapshot map[string]HostState
+
+// HostState is the managed global configuration of one host section.
+type HostState struct{ Helpers, UseHTTPPath []string }
 
 func SnapshotHosts(hosts []string) (HelperSnapshot, error) {
 	snapshot := HelperSnapshot{}
@@ -131,36 +153,53 @@ func SnapshotHosts(hosts []string) (HelperSnapshot, error) {
 		if err != nil {
 			return nil, err
 		}
-		snapshot[normalized], err = configuredHelpersHost(normalized)
-		if err != nil {
+		var prior HostState
+		if prior.Helpers, err = configuredHelpersHost(normalized); err != nil {
 			return nil, err
 		}
+		if prior.UseHTTPPath, err = globalValues(useHTTPPathKey(normalized)); err != nil {
+			return nil, err
+		}
+		snapshot[normalized] = prior
 	}
 	return snapshot, nil
 }
 
 func RestoreHosts(snapshot HelperSnapshot) error {
 	var result error
-	for host, helpers := range snapshot {
-		result = errors.Join(result, replaceHelpersHost(host, helpers))
+	for host, prior := range snapshot {
+		result = errors.Join(result, replaceHelpersHost(host, prior.Helpers), replaceGlobalValues(useHTTPPathKey(host), prior.UseHTTPPath))
 	}
 	return result
 }
 
-func ConfigureHosts(hosts []string) error {
+// ConfigureHosts installs the helper chain on hosts and enables useHttpPath on
+// pathHosts only. useHttpPath is never unset automatically: other helpers may
+// rely on it.
+func ConfigureHosts(hosts []string, pathHosts ...string) error {
 	snapshot, err := SnapshotHosts(hosts)
 	if err != nil {
 		return err
 	}
+	wantPath := map[string]bool{}
+	for _, host := range pathHosts {
+		normalized, err := config.NormalizeHost(host)
+		if err != nil {
+			return err
+		}
+		wantPath[normalized] = true
+	}
 	for host, existing := range snapshot {
-		if err := configureHost(host, existing); err != nil {
+		if err := configureHost(host, existing.Helpers, existing.UseHTTPPath, wantPath[host]); err != nil {
 			return errors.Join(err, RestoreHosts(snapshot))
 		}
 	}
 	return nil
 }
 
-func configureHost(host string, existing []string) error {
+// configureHost installs the helper chain and, for hosts with owner pins,
+// enables useHttpPath: Git sends the repository path to helpers only then.
+func configureHost(host string, existing, useHTTPPath []string, enablePath bool) error {
 	helperPath, err := HelperPath()
 	if err != nil {
 		return err
@@ -180,7 +219,16 @@ func configureHost(host string, existing []string) error {
 		desired = append(desired, helper)
 	}
 	desired = append(desired, helperFallback)
-	return replaceHelpersHost(host, desired)
+	if err := replaceHelpersHost(host, desired); err != nil {
+		return err
+	}
+	if !enablePath || len(useHTTPPath) == 1 && useHTTPPath[0] == "true" {
+		return nil
+	}
+	if value, isFalse := explicitFalse(useHTTPPath); isFalse {
+		fmt.Fprintf(os.Stderr, "Note: overwriting credential.https://%s.useHttpPath=%s with true; owner pins need request paths.\n", host, value)
+	}
+	return replaceGlobalValues(useHTTPPathKey(host), []string{"true"})
 }
 
 func configuredHelpers() ([]string, error) {
@@ -188,7 +236,27 @@ func configuredHelpers() ([]string, error) {
 }
 
 func configuredHelpersHost(host string) ([]string, error) {
-	cmd := exec.Command("git", "config", "--global", "--get-all", "credential.https://"+host+".helper")
+	return globalValues("credential.https://" + host + ".helper")
+}
+
+// explicitFalse reports whether the effective (last) value is a Git false.
+func explicitFalse(values []string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	last := strings.ToLower(strings.TrimSpace(values[len(values)-1]))
+	switch last {
+	case "false", "no", "off", "0":
+		return last, true
+	}
+	return "", false
+}
+
+func useHTTPPathKey(host string) string { return "credential.https://" + host + ".useHttpPath" }
+
+// globalValues returns every global value of key, or nil when it is unset.
+func globalValues(key string) ([]string, error) {
+	cmd := exec.Command("git", "config", "--global", "--get-all", key)
 	cmd.Env = append([]string{}, os.Environ()...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -196,7 +264,7 @@ func configuredHelpersHost(host string) ([]string, error) {
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("cannot read existing Git helpers: %w", err)
+		return nil, fmt.Errorf("cannot read existing Git configuration %s: %w", key, err)
 	}
 	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"), nil
 }
@@ -212,20 +280,24 @@ func replaceConfiguredHelpers(helpers []string) error {
 }
 
 func replaceHelpersHost(host string, helpers []string) error {
-	key := "credential.https://" + host + ".helper"
+	return replaceGlobalValues("credential.https://"+host+".helper", helpers)
+}
+
+// replaceGlobalValues sets key to exactly values; none unsets it.
+func replaceGlobalValues(key string, helpers []string) error {
 	unset := exec.Command("git", "config", "--global", "--unset-all", key)
 	unset.Env = append([]string{}, os.Environ()...)
 	if err := unset.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 5 {
-			return fmt.Errorf("cannot clear Git helper configuration: %w", err)
+			return fmt.Errorf("cannot clear Git configuration %s: %w", key, err)
 		}
 	}
 	for _, helper := range helpers {
 		cmd := exec.Command("git", "config", "--global", "--add", key, helper)
 		cmd.Env = append([]string{}, os.Environ()...)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("cannot add Git helper %q: %w", helper, err)
+			return fmt.Errorf("cannot add Git configuration %s=%q: %w", key, helper, err)
 		}
 	}
 	return nil
@@ -261,6 +333,16 @@ func CheckConfiguredHost(host string) bool {
 		}
 	}
 	return false
+}
+
+// CheckUseHTTPPathHost reports whether Git passes request paths to helpers for host.
+func CheckUseHTTPPathHost(host string) bool {
+	host, err := config.NormalizeHost(host)
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command("git", "config", "--global", "--type=bool", "--get", useHTTPPathKey(host)).Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 func primaryHelper(path string) string {

@@ -28,16 +28,41 @@ const (
 	ModeExport PinMode = "export"
 )
 
-// Pin represents a directory-to-account mapping.
+// Pin maps either a directory or a repository owner to an account. Exactly one
+// of Dir and Owner is set; owner pins are wrapper-mode only and have no .envrc.
 type Pin struct {
 	User         string  `yaml:"user"`
 	Host         string  `yaml:"host,omitempty"`
 	TokenCommand string  `yaml:"token_command,omitempty"`
-	Dir          string  `yaml:"dir"`
+	Dir          string  `yaml:"dir,omitempty"`
+	Owner        string  `yaml:"owner,omitempty"`
 	Mode         PinMode `yaml:"mode,omitempty"`
 	GitEmail     string  `yaml:"git_email,omitempty"`
 	GitName      string  `yaml:"git_name,omitempty"`
 	SSHKey       string  `yaml:"ssh_key,omitempty"`
+}
+
+// ValidLogin reports whether s is a syntactically valid GitHub login or
+// organization name, including Enterprise Managed User shortcodes.
+func ValidLogin(s string) bool {
+	if len(s) == 0 || len(s) > 39 {
+		return false
+	}
+	base, shortcode, managed := strings.Cut(s, "_")
+	if base == "" || base[0] == '-' || base[len(base)-1] == '-' || strings.Contains(base, "--") || managed && shortcode == "" {
+		return false
+	}
+	for _, c := range base {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	for _, c := range shortcode {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // NormalizeHost validates a hostname and applies the legacy github.com default.
@@ -106,6 +131,9 @@ func (r *PinRegistry) findPinStrict(dir string, canonicalDir func(string) (strin
 	bestLen := -1
 	for i := range r.Pins {
 		p := &r.Pins[i]
+		if p.IsOwner() {
+			continue
+		}
 		path, err := canonicalDir(p.Dir)
 		if err != nil {
 			stored, absErr := filepath.Abs(p.Dir)
@@ -133,6 +161,9 @@ func pathContains(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
+
+// IsOwner reports whether the pin selects by repository owner, not directory.
+func (p *Pin) IsOwner() bool { return p.Owner != "" }
 
 // EffectiveMode returns the pin's mode, defaulting to ModeWrapper.
 func (p *Pin) EffectiveMode() PinMode {
@@ -201,6 +232,9 @@ func LoadPins() (*PinRegistry, error) {
 		}
 		return nil, fmt.Errorf("cannot parse pins file %s (unknown keys are rejected; check for typos in hand-edited fields): %w", path, err)
 	}
+	if err := registry.validate(); err != nil {
+		return nil, fmt.Errorf("invalid pins file %s: %w", path, err)
+	}
 	return &registry, nil
 }
 
@@ -232,6 +266,9 @@ func (r *PinRegistry) FindPin(dir string) *Pin {
 	}
 	var best *Pin
 	for i := range r.Pins {
+		if r.Pins[i].IsOwner() {
+			continue
+		}
 		pinnedDir := r.Pins[i].Dir
 		if absDir == pinnedDir || strings.HasPrefix(absDir, pinnedDir+string(os.PathSeparator)) {
 			if best == nil || len(pinnedDir) > len(best.Dir) {
@@ -301,6 +338,9 @@ func (r *PinRegistry) AddPinStrict(pin Pin) error {
 	}
 	match := -1
 	for i := range r.Pins {
+		if r.Pins[i].IsOwner() {
+			continue
+		}
 		stored, err := CanonicalDir(r.Pins[i].Dir)
 		if err == nil && stored == dir {
 			if match != -1 {
@@ -317,8 +357,12 @@ func (r *PinRegistry) AddPinStrict(pin Pin) error {
 	return nil
 }
 
-// AddPin adds or updates a pin in the registry.
-func (r *PinRegistry) AddPin(pin Pin) {
+// AddPin adds or updates a directory pin in the registry. Owner pins have no
+// directory and must use AddOwnerPin.
+func (r *PinRegistry) AddPin(pin Pin) error {
+	if pin.IsOwner() {
+		return fmt.Errorf("owner pins must be added with AddOwnerPin")
+	}
 	absDir, err := CanonicalDir(pin.Dir)
 	if err != nil {
 		absDir, err = filepath.Abs(pin.Dir)
@@ -336,10 +380,11 @@ func (r *PinRegistry) AddPin(pin Pin) {
 	for i := range r.Pins {
 		if r.Pins[i].Dir == pin.Dir {
 			r.Pins[i] = pin
-			return
+			return nil
 		}
 	}
 	r.Pins = append(r.Pins, pin)
+	return nil
 }
 
 // RemovePin removes a pin by directory path. Returns true if found and removed.
@@ -349,6 +394,9 @@ func (r *PinRegistry) RemovePin(dir string) bool {
 		return false
 	}
 	for i := range r.Pins {
+		if r.Pins[i].IsOwner() {
+			continue
+		}
 		stored, storedErr := filepath.Abs(r.Pins[i].Dir)
 		if r.Pins[i].Dir == dir || storedErr == nil && stored == absDir {
 			r.Pins = append(r.Pins[:i], r.Pins[i+1:]...)
@@ -360,8 +408,118 @@ func (r *PinRegistry) RemovePin(dir string) bool {
 		return false
 	}
 	for i := range r.Pins {
+		if r.Pins[i].IsOwner() {
+			continue
+		}
 		resolved, err := CanonicalDir(r.Pins[i].Dir)
 		if err == nil && canonical == resolved {
+			r.Pins = append(r.Pins[:i], r.Pins[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// validate enforces the dir-xor-owner shape and owner uniqueness. Legacy
+// directory-only registries always pass.
+func (r *PinRegistry) validate() error {
+	seen := make(map[string]bool)
+	for i := range r.Pins {
+		p := &r.Pins[i]
+		if (p.Dir == "") == (p.Owner == "") {
+			return fmt.Errorf("pin %d (%q) must set exactly one of dir or owner", i+1, p.User)
+		}
+		if !p.IsOwner() {
+			continue
+		}
+		key, err := p.ownerKey()
+		if err != nil {
+			return fmt.Errorf("pin %d (%q): %w", i+1, p.User, err)
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate owner pin %q for host %q", p.Owner, p.Host)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// ownerKey validates an owner pin and returns its (host, owner) identity.
+func (p *Pin) ownerKey() (string, error) {
+	if p.Dir != "" {
+		return "", fmt.Errorf("owner pins must not set dir")
+	}
+	if !ValidLogin(p.Owner) {
+		return "", fmt.Errorf("invalid owner %q", p.Owner)
+	}
+	if p.EffectiveMode() != ModeWrapper {
+		return "", fmt.Errorf("owner pins support wrapper mode only")
+	}
+	host, err := NormalizeHost(p.Host)
+	if err != nil {
+		return "", err
+	}
+	return host + "/" + strings.ToLower(p.Owner), nil
+}
+
+// HasOwnerPins reports whether any pin selects by owner.
+func (r *PinRegistry) HasOwnerPins() bool {
+	for i := range r.Pins {
+		if r.Pins[i].IsOwner() {
+			return true
+		}
+	}
+	return false
+}
+
+// FindOwnerPin returns the owner pin for host and owner (case-insensitive).
+func (r *PinRegistry) FindOwnerPin(host, owner string) *Pin {
+	host, err := NormalizeHost(host)
+	if err != nil || owner == "" {
+		return nil
+	}
+	for i := range r.Pins {
+		p := &r.Pins[i]
+		if !p.IsOwner() {
+			continue
+		}
+		if pinHost, err := NormalizeHost(p.Host); err == nil && pinHost == host && strings.EqualFold(p.Owner, owner) {
+			return p
+		}
+	}
+	return nil
+}
+
+// AddOwnerPin validates and stores an owner pin, replacing one for the same
+// (host, owner).
+func (r *PinRegistry) AddOwnerPin(pin Pin) error {
+	key, err := pin.ownerKey()
+	if err != nil {
+		return err
+	}
+	if pin.Host != "" {
+		pin.Host, _ = NormalizeHost(pin.Host)
+	}
+	for i := range r.Pins {
+		if existing := &r.Pins[i]; existing.IsOwner() {
+			if existingKey, err := existing.ownerKey(); err == nil && existingKey == key {
+				r.Pins[i] = pin
+				return nil
+			}
+		}
+	}
+	r.Pins = append(r.Pins, pin)
+	return nil
+}
+
+// RemoveOwnerPin removes the owner pin for host and owner. Returns true if found.
+func (r *PinRegistry) RemoveOwnerPin(host, owner string) bool {
+	pin := r.FindOwnerPin(host, owner)
+	if pin == nil {
+		return false
+	}
+	for i := range r.Pins {
+		if &r.Pins[i] == pin {
 			r.Pins = append(r.Pins[:i], r.Pins[i+1:]...)
 			return true
 		}

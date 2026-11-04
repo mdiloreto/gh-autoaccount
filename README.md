@@ -451,6 +451,63 @@ single-token output; failure never falls back. An older binary that predates
 `host` or `token_command` cannot read those registry fields: remove them with the
 current binary or restore a reviewed backup before rolling back.
 
+### Owner pins
+
+A directory pin cannot help when Git is run from elsewhere: Git runs credential
+helpers in the invoking directory, so `git clone https://github.com/work-org/x ~/work/x`
+from `~` authenticates as the default account, not the `~/work` pin. Pin the
+organization or user instead:
+
+```bash
+gh autoaccount pin bob --owner work-org --git-email bob@example.test
+gh autoaccount unpin --owner work-org            # add --host for Enterprise
+```
+
+An owner pin has an `owner` and no `dir`; it is wrapper-mode only, never writes
+`.envrc`, matches the owner case-insensitively and is unique per `(host, owner)`.
+An older binary rejects a registry containing owner pins (unknown `owner` key).
+Selection precedence everywhere is: `exec --user`, then the owner pin for the
+accessed repository, then the deepest directory pin, then the configured default.
+The owner comes from the Git credential request path, gh's `-R/--repo`,
+`GH_REPO`, the target of `gh repo clone` (which ignores both `-R` and `GH_REPO`),
+then the working directory's remote: the one marked `gh-resolved`, else
+`upstream`, `github`, `origin` (gh's order), else the only remote. gh's flag table
+is not known here, so an `-R`/`--repo` right after another flag (`=` or not) could
+be that flag's value, and a repeated `-R` is resolved by gh to its last value. In
+those cases, for an unparseable `-R`/`GH_REPO` or a bare `gh repo clone REPO`, and
+when an argument names a repository under another owner (a positional
+`OWNER/REPO` or URL such as `gh repo view other-org/x`, or an `api` path under
+`repos/OWNER/REPO`, including flag values that merely look like one), the target
+is unknown: owner routing is skipped for that command and the directory pin or
+default applies. `gh api` routes only by its own endpoint: a `repos/OWNER/REPO`
+path on its `--hostname` host, or `{owner}` placeholders resolved like gh's base
+repository on the same host; GraphQL and other endpoints get no owner routing.
+For `gh`, owner routing is a best-effort reading of the command line, not a
+sandbox: a command can still reach repositories its arguments do not name. The
+Git HTTPS helper routes exactly by Git's request, and no path sends a pin's
+credential to a host other than the pin's. Put `-R` before other flags or right after a
+positional argument to route by it. `exec --require-pin` accepts an owner or a
+directory pin.
+
+With `setup --git-identity`, `git_email`/`git_name` on an owner pin apply to
+repositories with a remote URL (https or ssh, with or without userinfo or a
+port, or scp-style) under that owner, and win over directory identity;
+this needs Git 2.36 or newer, and setup and doctor refuse or flag older Git.
+Known limitation: Git can only match `remote.*.url`, so identity matches every
+remote while credentials follow the one selection above. A checkout with a
+remote under an owner pin that credentials do not select (another remote wins,
+or several owner pins match) can therefore disagree, and `status` warns about it
+(`conflicting_owner_pins` in `--json`).
+
+For the Git path, setup and pin also set `credential.https://<host>.useHttpPath=true`
+on hosts that have an owner pin, because Git omits the repository path from
+helper requests otherwise; an explicit `false` is overwritten with a note. It is
+never unset automatically, even after the last owner pin is removed. Every other
+helper in the chain, including the `gh auth git-credential` fallback, then sees
+per-path requests; credential stores that key on the path keep one entry per
+repository. `doctor` reports a missing setting only for hosts with owner pins and
+`doctor --fix` restores it.
+
 ### List all pins
 
 ```bash
@@ -670,8 +727,14 @@ The active direnv root is `DIRENV_CONFIG`, otherwise `XDG_CONFIG_HOME/direnv` or
 - **Export mode:** Tokens live in the shell environment and are accessible to its
   children; use only when required.
 - **Permissions:** `pins.yml` is 0600 and the config directory 0700.
-- **Selection:** Trusted pins, not repository content or remote metadata, select
-  credentials. Git identity, HTTPS authentication and SSH are separate.
+- **Selection:** Pins are the only source of accounts. With owner pins, the
+  repository URL being accessed (Git's credential path, `-R`/`GH_REPO`, the clone
+  target, or the checkout's remotes and submodules) chooses among them, and a
+  credential is returned only for the chosen pin's exact host. A checkout's remotes
+  or submodules can therefore make Git authenticate as an owner-pinned account for
+  URLs under that owner on that host: a personal-directory checkout with a
+  `work-org` submodule fetches it as the `work-org` account. Git identity, HTTPS
+  authentication and SSH are separate.
 - **Shell quoting:** Values written to `.envrc` use POSIX single-quote escaping.
 
 See [SECURITY.md](SECURITY.md) for trust boundaries and reporting.

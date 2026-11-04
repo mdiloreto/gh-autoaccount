@@ -8,28 +8,44 @@ import (
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
-	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/spf13/cobra"
 )
 
 // NewUnpinCmd creates the `unpin` subcommand.
 func NewUnpinCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "unpin [directory]",
-		Short: "Remove a pinned account from a directory",
+		Short: "Remove a pinned account from a directory or owner",
 		Long: `Remove the gh-autoprofile block from the directory's .envrc and
 delete the pin from the registry. If the .envrc has no other content,
 it will be deleted entirely.
 
+With --owner, remove the owner pin instead; no .envrc is involved.
+
 Examples:
   gh autoaccount unpin              # unpin current directory
-  gh autoaccount unpin ~/project    # unpin specific directory`,
+  gh autoaccount unpin ~/project    # unpin specific directory
+  gh autoaccount unpin --owner work-org`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runUnpin,
 	}
+	cmd.Flags().String("owner", "", "Remove the pin for this repository owner instead of a directory")
+	cmd.Flags().String("host", "", "GitHub hostname of the owner pin (with --owner)")
+	return cmd
 }
 
 func runUnpin(cmd *cobra.Command, args []string) error {
+	owner, _ := cmd.Flags().GetString("owner")
+	host, _ := cmd.Flags().GetString("host")
+	if owner != "" {
+		if len(args) > 0 {
+			return fmt.Errorf("--owner cannot be combined with a directory argument")
+		}
+		return runUnpinOwner(owner, host)
+	}
+	if host != "" {
+		return fmt.Errorf("--host requires --owner")
+	}
 	dir := "."
 	if len(args) > 0 {
 		dir = args[0]
@@ -117,19 +133,9 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 	if err := savePinsAndIdentity(registry); err != nil {
 		return errors.Join(fmt.Errorf("cannot remove pin and Git identity: %w", err), restoreEnvrc())
 	}
-	var helpers gitcred.HelperSnapshot
-	if gitcred.CheckConfigured() {
-		// Removed hosts retain their prior section: no historical helper snapshot exists.
-		hosts, err := gitcred.Hosts(registry)
-		if err == nil {
-			helpers, err = gitcred.SnapshotHosts(hosts)
-		}
-		if err == nil {
-			err = gitcred.ConfigureHosts(hosts)
-		}
-		if err != nil {
-			return errors.Join(fmt.Errorf("cannot refresh Git helpers: %w", err), gitcred.RestoreHosts(helpers), savePinsAndIdentity(previous), restoreEnvrc())
-		}
+	// Removed hosts retain their prior section: no historical helper snapshot exists.
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
+		return errors.Join(err, restoreEnvrc())
 	}
 	if dirErr != nil {
 		fmt.Printf("Unpinned '%s' from %s (directory inaccessible; .envrc cleanup skipped)\n", user, absDir)
@@ -141,5 +147,32 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Unpinned '%s' from %s\n", user, absDir)
+	return nil
+}
+
+func runUnpinOwner(owner, host string) error {
+	unlock, err := config.LockMutations()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	registry, err := config.LoadPins()
+	if err != nil {
+		return fmt.Errorf("cannot load pin registry: %w", err)
+	}
+	pin := registry.FindOwnerPin(host, owner)
+	if pin == nil {
+		return fmt.Errorf("no owner pin found for %s", owner)
+	}
+	user := pin.User
+	previous := &config.PinRegistry{Pins: append([]config.Pin(nil), registry.Pins...)}
+	registry.RemoveOwnerPin(host, owner)
+	if err := savePinsAndIdentity(registry); err != nil {
+		return fmt.Errorf("cannot remove pin and Git identity: %w", err)
+	}
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
+		return err
+	}
+	fmt.Printf("Unpinned '%s' from owner %s\n", user, owner)
 	return nil
 }
