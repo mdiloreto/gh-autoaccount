@@ -138,3 +138,14 @@ func TestOwnerPinsAreInvisibleToDirectoryLookups(t *testing.T) {
 		t.Fatalf("AddPinStrict replaced an owner pin: %+v %v", registry.Pins, err)
 	}
 }
+
+func TestLegacyAddPinRejectsOwnerPins(t *testing.T) {
+	t.Chdir(t.TempDir())
+	registry := &PinRegistry{}
+	if err := registry.AddPin(Pin{User: "bob", Owner: "work-org"}); err == nil || len(registry.Pins) != 0 {
+		t.Fatalf("AddPin accepted an owner pin: %v %+v", err, registry.Pins)
+	}
+	if err := registry.AddPin(Pin{User: "alice", Dir: "/tmp/a"}); err != nil || len(registry.Pins) != 1 {
+		t.Fatalf("AddPin rejected a directory pin: %v", err)
+	}
+}

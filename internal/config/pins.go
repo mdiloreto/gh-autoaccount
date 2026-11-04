@@ -357,8 +357,12 @@ func (r *PinRegistry) AddPinStrict(pin Pin) error {
 	return nil
 }
 
-// AddPin adds or updates a pin in the registry.
-func (r *PinRegistry) AddPin(pin Pin) {
+// AddPin adds or updates a directory pin in the registry. Owner pins have no
+// directory and must use AddOwnerPin.
+func (r *PinRegistry) AddPin(pin Pin) error {
+	if pin.IsOwner() {
+		return fmt.Errorf("owner pins must be added with AddOwnerPin")
+	}
 	absDir, err := CanonicalDir(pin.Dir)
 	if err != nil {
 		absDir, err = filepath.Abs(pin.Dir)
@@ -376,10 +380,11 @@ func (r *PinRegistry) AddPin(pin Pin) {
 	for i := range r.Pins {
 		if r.Pins[i].Dir == pin.Dir {
 			r.Pins[i] = pin
-			return
+			return nil
 		}
 	}
 	r.Pins = append(r.Pins, pin)
+	return nil
 }
 
 // RemovePin removes a pin by directory path. Returns true if found and removed.
