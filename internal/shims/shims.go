@@ -198,7 +198,8 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-// CheckPathConfigured checks if the shim PATH block exists in common shell RC files.
+// CheckPathConfigured reports whether the shim directory is on the current PATH
+// or the managed PATH block exists in common shell RC files.
 func CheckPathConfigured() bool {
 	if shimDir, err := Dir(); err == nil {
 		for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
@@ -207,7 +208,13 @@ func CheckPathConfigured() bool {
 			}
 		}
 	}
+	return CheckPathBlockInstalled()
+}
 
+// CheckPathBlockInstalled reports only the managed PATH block in shell RC files.
+// Unlike CheckPathConfigured it ignores the process PATH, which may contain the
+// shim directory without any gh-autoaccount installation.
+func CheckPathBlockInstalled() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false

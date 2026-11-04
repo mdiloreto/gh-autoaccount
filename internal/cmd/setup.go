@@ -74,11 +74,11 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	previousNative := settings.Native
 	if cmd.Flags().Changed("native") {
 		settings.Native, _ = cmd.Flags().GetBool("native")
-	} else if !settings.Native && shims.NativeGHSupported() && freshInstall() {
+	} else if !settings.Native && nativeGHSupported() && freshInstall() {
 		settings.Native = true
 	}
-	if !settings.Native {
-		fmt.Fprintln(cmd.ErrOrStderr(), legacyDeprecation)
+	if notice := legacyNotice(); !settings.Native && notice != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "gh-autoaccount: "+notice)
 	}
 	if settings.Native && !shims.NativeGHSupported() {
 		return fmt.Errorf("native gh routing is unsupported on this platform")
@@ -521,8 +521,8 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Println("    export             — requires direnv; GH_TOKEN exported (use --export-token flag)")
 			fmt.Println("    Git identity       — separately opt-in with --git-identity")
 		} else {
-			fmt.Println("    wrapper (default)  — token injected per-command, never in env")
-			fmt.Println("    export             — GH_TOKEN exported (use --export-token flag)")
+			fmt.Println("    wrapper            — deprecated; token injected per-command, never in env")
+			fmt.Println("    export             — deprecated; GH_TOKEN exported (use --export-token flag)")
 			if cmd.Flags().Changed("native") {
 				fmt.Println("    Git helper and managed identity settings are retained; the helper still routes HTTPS credentials via pins.")
 			}
@@ -578,7 +578,19 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 }
 
 // legacyDeprecation is shown wherever legacy (non-native) routing is active.
-const legacyDeprecation = "Deprecated: legacy wrapper routing does not cover non-interactive shells (agents, editor tasks, cron). Run `gh autoaccount setup --native` to migrate."
+const legacyDeprecation = "legacy wrapper routing is deprecated: it does not cover non-interactive shells (agents, editor tasks, cron). Run `gh autoaccount setup --native` to migrate."
+
+// nativeGHSupported is a seam for tests; legacy is the only mode where false.
+var nativeGHSupported = shims.NativeGHSupported
+
+// legacyNotice is empty where native routing is unavailable, so users are not
+// told to run a command that cannot succeed.
+func legacyNotice() string {
+	if !nativeGHSupported() {
+		return ""
+	}
+	return legacyDeprecation
+}
 
 // freshInstall reports whether no gh-autoaccount integration exists yet, so a
 // default can be chosen without changing an existing installation. Uncertainty
@@ -595,7 +607,7 @@ func freshInstall() bool {
 		}
 	}
 	return !shims.IsGHInstalled() && !shims.IsNativeGHInstalled() && !gitcred.IsInstalled() &&
-		!direnvlib.CheckShellHookInstalled() && !shims.CheckPathConfigured()
+		!direnvlib.CheckShellHookInstalled() && !shims.CheckPathBlockInstalled()
 }
 
 type setupFileSnapshot struct {

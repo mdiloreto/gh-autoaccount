@@ -1696,3 +1696,37 @@ exec "$@"
 		})
 	}
 }
+
+func TestShellLibWrapperNoticeSkippedOnWindowsShells(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip(err)
+	}
+	root := t.TempDir()
+	t.Setenv("DIRENV_CONFIG", filepath.Join(root, "direnv"))
+	extension := filepath.Join(root, "extension")
+	fixture := "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexport GH_AUTOPROFILE_USER=alice GH_AUTOPROFILE_HOST=github.com GH_AUTOPROFILE_MODE=wrapper\nexec \"$@\"\n"
+	fakeBin := filepath.Join(root, "bin")
+	for path, body := range map[string]string{
+		extension:                       fixture,
+		filepath.Join(fakeBin, "uname"): "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := InstallShellLib(extension, "/bin/sh"); err != nil {
+		t.Fatal(err)
+	}
+	lib, _ := ShellLibPath()
+	script := `log_error() { :; }; log_status() { printf 'STATUS:%s\n' "$*"; }; source "$LIB"; use_gh_autoprofile alice`
+	cmd := exec.Command(bash, "-c", script)
+	cmd.Env = append(os.Environ(), "LIB="+lib, "PATH="+fakeBin+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.Contains(string(out), "deprecated") || !strings.Contains(string(out), "activated") {
+		t.Fatalf("windows shell notice: %v\n%s", err, out)
+	}
+}

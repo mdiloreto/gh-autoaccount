@@ -59,8 +59,52 @@ func TestFreshSetupDefaultsToNative(t *testing.T) {
 	if !shims.IsNativeGHInstalled() || !gitcred.IsInstalled() || !gitcred.CheckConfigured() {
 		t.Fatal("native proxy or Git helper missing after fresh setup")
 	}
-	if strings.Contains(stderr.String(), "Deprecated") {
+	if strings.Contains(stderr.String(), "deprecated") {
 		t.Fatalf("native setup printed a deprecation notice: %s", stderr.String())
+	}
+}
+
+func TestFreshSetupIgnoresShimDirOnProcessPath(t *testing.T) {
+	requireNativeSupport(t)
+	home := onboardingHome(t)
+	t.Setenv("PATH", filepath.Join(home, ".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command := NewSetupCmd()
+	command.SetArgs([]string{"--no-shell-rc"})
+	captureOnboarding(t, command.Execute)
+	if settings, err := config.LoadSettings(); err != nil || !settings.Native {
+		t.Fatalf("shim dir on PATH made a fresh install legacy: %+v %v", settings, err)
+	}
+}
+
+func TestLegacyNoticeSuppressedWhereNativeUnsupported(t *testing.T) {
+	old := nativeGHSupported
+	nativeGHSupported = func() bool { return false }
+	t.Cleanup(func() { nativeGHSupported = old })
+	home := onboardingHome(t)
+	if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var setupErr bytes.Buffer
+	setup := NewSetupCmd()
+	setup.SetErr(&setupErr)
+	setup.SetArgs([]string{"--no-shell-rc"})
+	captureOnboarding(t, setup.Execute)
+	if settings, _ := config.LoadSettings(); settings.Native {
+		t.Fatal("unsupported platform defaulted to native")
+	}
+	pinErr := captureStderr(t, func() {
+		captureOnboarding(t, func() error { return runPin("alice", repo, "", "", "", false) })
+	})
+	doctor := captureOnboarding(t, NewDoctorCmd().Execute)
+	status := captureOnboarding(t, NewStatusCmd().Execute)
+	for name, out := range map[string]string{"setup": setupErr.String(), "pin": pinErr, "doctor": doctor, "status": status} {
+		if strings.Contains(out, "deprecated") || strings.Contains(out, "setup --native") {
+			t.Fatalf("%s told the user to run an unsupported command: %s", name, out)
+		}
 	}
 }
 
@@ -138,15 +182,15 @@ func TestLegacyDeprecationInDoctorAndStatus(t *testing.T) {
 		doctor := captureOnboarding(t, NewDoctorCmd().Execute)
 		status := captureOnboarding(t, NewStatusCmd().Execute)
 		if native {
-			if strings.Contains(doctor, "Deprecated") || strings.Contains(status, "Deprecated") {
+			if strings.Contains(doctor, "deprecated") || strings.Contains(status, "deprecated") {
 				t.Fatalf("native mode reported a deprecation:\n%s\n%s", doctor, status)
 			}
 			continue
 		}
-		if !strings.Contains(doctor, "WARN Deprecated: legacy") || !strings.Contains(doctor, "gh autoaccount setup --native") || strings.Contains(doctor, "Doctor check passed") {
+		if !strings.Contains(doctor, "WARN legacy wrapper routing is deprecated") || !strings.Contains(doctor, "gh autoaccount setup --native") || strings.Contains(doctor, "Doctor check passed") {
 			t.Fatalf("doctor missing legacy warning:\n%s", doctor)
 		}
-		if !strings.Contains(status, "WARN: Deprecated: legacy") || !strings.Contains(status, "gh autoaccount setup --native") {
+		if !strings.Contains(status, "WARN: legacy wrapper routing is deprecated") || !strings.Contains(status, "gh autoaccount setup --native") {
 			t.Fatalf("status missing legacy warning:\n%s", status)
 		}
 	}
@@ -186,7 +230,7 @@ func TestPinDeprecationNotices(t *testing.T) {
 			if got := strings.Contains(stderr, "gh autoaccount exec --"); got != tc.wantExports {
 				t.Fatalf("export notice = %t, want %t: %q", got, tc.wantExports, stderr)
 			}
-			if strings.Count(stderr, "Deprecated") > 1 {
+			if strings.Count(stderr, "deprecated") > 1 {
 				t.Fatalf("expected one notice, got %q", stderr)
 			}
 		})

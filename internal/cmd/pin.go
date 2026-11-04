@@ -122,9 +122,9 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 	}
 	native := settings.Native && mode == config.ModeWrapper
 	if exportToken {
-		fmt.Fprintln(os.Stderr, "Deprecated: export mode leaves a token in the environment. Use `gh autoaccount exec -- <command>` for a command-scoped token.")
-	} else if !native {
-		fmt.Fprintln(os.Stderr, legacyDeprecation)
+		fmt.Fprintln(os.Stderr, "gh-autoaccount: export mode is deprecated: it leaves a token in the environment. Use `gh autoaccount exec -- <command>` for a command-scoped token.")
+	} else if notice := legacyNotice(); !native && notice != "" {
+		fmt.Fprintln(os.Stderr, "gh-autoaccount: "+notice)
 	}
 	if !native && !direnvlib.IsShellLibInstalled() {
 		return fmt.Errorf("direnv shell library not installed. Run first: gh autoaccount setup")

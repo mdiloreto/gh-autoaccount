@@ -241,6 +241,9 @@ identity settings; the helper continues routing Git HTTPS through pins. The swit
 can complete without direnv, but legacy wrappers and export need direnv to activate.
 `setup --migrate` and `doctor --fix` preserve the selected routing mode.
 
+If you restore an existing `pins.yml` on a new machine, run
+`gh autoaccount setup --native`; an existing registry keeps legacy routing.
+
 ### Wrapper mode (legacy, deprecated)
 
 Deprecated: it misses non-interactive shells such as agents, editor tasks and cron.

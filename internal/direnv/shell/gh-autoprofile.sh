@@ -58,7 +58,11 @@ use_gh_autoprofile() {
     return 1
   fi
 
-  log_status "gh-autoaccount" "deprecated: wrapper mode does not cover non-interactive shells; run 'gh autoaccount setup --native'"
+  # Native routing is unavailable on Windows shells, where legacy is the only mode.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *) log_status "gh-autoaccount" "deprecated: wrapper mode does not cover non-interactive shells; run 'gh autoaccount setup --native'" ;;
+  esac
   log_status "gh-autoaccount" "activated '$user' (wrapper mode)"
 }
 

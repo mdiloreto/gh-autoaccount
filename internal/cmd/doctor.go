@@ -70,9 +70,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("INFO direnv is optional for native routing; export workflows require it")
 	} else {
 		fmt.Println("INFO routing mode: legacy (shell wrappers and optional shim)")
-		fmt.Println("WARN " + legacyDeprecation)
-		issues++
-		legacyIssues = 1
+		if notice := legacyNotice(); notice != "" {
+			fmt.Println("WARN " + notice)
+			issues++
+			legacyIssues = 1
+		}
 	}
 
 	libPath, libPathErr := direnvlib.ShellLibPath()
