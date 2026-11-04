@@ -278,3 +278,72 @@ func TestCheckConfiguredMatchesCurrentAndLegacyEntries(t *testing.T) {
 		}
 	}
 }
+
+func isolatedGlobalGit(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "gitconfig"))
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+}
+
+func TestConfigureHostsEnablesUseHTTPPathAndRestoresPriorValues(t *testing.T) {
+	isolatedGlobalGit(t)
+	hosts := []string{"ghe.example.com", "github.com", "other.example.com"}
+	// Prior state: explicit false, absent, and an unrelated setting that must survive.
+	if err := replaceGlobalValues(useHTTPPathKey("github.com"), []string{"false"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceGlobalValues(useHTTPPathKey("other.example.com"), []string{"yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceGlobalValues("user.name", []string{"Unrelated"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range hosts {
+		if CheckUseHTTPPathHost(host) && host != "other.example.com" {
+			t.Fatalf("%s unexpectedly enabled before configuration", host)
+		}
+	}
+	snapshot, err := SnapshotHosts(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigureHosts(hosts); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range hosts {
+		if !CheckUseHTTPPathHost(host) {
+			t.Fatalf("useHttpPath missing for %s", host)
+		}
+		got, err := globalValues(useHTTPPathKey(host))
+		if err != nil || len(got) != 1 || got[0] != "true" {
+			t.Fatalf("%s useHttpPath = %q (%v), want exactly one true", host, got, err)
+		}
+	}
+	// Reconfiguring is idempotent and does not duplicate entries.
+	if err := ConfigureHosts(hosts); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := globalValues(useHTTPPathKey("github.com")); len(got) != 1 {
+		t.Fatalf("duplicate useHttpPath entries: %q", got)
+	}
+	if err := RestoreHosts(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string][]string{"github.com": {"false"}, "other.example.com": {"yes"}, "ghe.example.com": nil} {
+		got, err := globalValues(useHTTPPathKey(host))
+		if err != nil || strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s restored to %q (%v), want %q", host, got, err, want)
+		}
+	}
+	if got, _ := globalValues("user.name"); len(got) != 1 || got[0] != "Unrelated" {
+		t.Fatalf("unrelated config changed: %q", got)
+	}
+	if CheckUseHTTPPathHost("github.com") || CheckUseHTTPPathHost("not a host") {
+		t.Fatal("check reports enabled after restore or for an invalid host")
+	}
+}
