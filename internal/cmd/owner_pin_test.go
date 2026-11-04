@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
@@ -519,17 +518,11 @@ func TestFailedNativeSetupRestoresUseHTTPPath(t *testing.T) {
 	savePins(t, config.Pin{User: "alice", Owner: "work-org", Mode: config.ModeWrapper})
 	trace := filepath.Join(home, "git-trace")
 	t.Setenv("GIT_TRACE", trace)
-	// Native setup configures the helper first; a directory where the shell hook
-	// belongs then fails it, so the rollback has something to undo.
-	hook, err := direnvlib.ShellHookPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(hook, 0700); err != nil {
-		t.Fatal(err)
-	}
+	// Setup configures the helper first; a failing migration then makes it roll
+	// the helper back.
+	breakMigration(t)
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--native", "--no-shell-rc"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 	setup.SetOut(&bytes.Buffer{})
 	setup.SetErr(&bytes.Buffer{})
 	captured := captureSilently(t, func() { err = setup.Execute() })

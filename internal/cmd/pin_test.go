@@ -10,16 +10,12 @@ import (
 	"testing"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitidentity"
 )
 
 func TestPinUnpinRefreshHostHelpers(t *testing.T) {
 	home := onboardingHome(t)
-	if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
-		t.Fatal(err)
-	}
 	if err := gitcred.ConfigureGit(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,9 +63,6 @@ func TestPinUnpinRefreshFailureRollsBackIdentity(t *testing.T) {
 	for _, operation := range []string{"pin", "unpin"} {
 		t.Run(operation, func(t *testing.T) {
 			home := onboardingHome(t)
-			if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
-				t.Fatal(err)
-			}
 			if err := config.SaveSettings(config.Settings{GitIdentity: true}); err != nil {
 				t.Fatal(err)
 			}

@@ -17,7 +17,7 @@ import (
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
 
-func TestNativePinCleanupAndUnpin(t *testing.T) {
+func TestPinLeavesEnvrcAndUnpinCleansManagedBlock(t *testing.T) {
 	home := onboardingHome(t)
 	dir := filepath.Join(home, "repo")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -31,7 +31,7 @@ func TestNativePinCleanupAndUnpin(t *testing.T) {
 	}
 	path := filepath.Join(dir, ".envrc")
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		t.Fatalf("fresh native pin created envrc: %v", err)
+		t.Fatalf("native pin created envrc: %v", err)
 	}
 	const old = "before\r\n# gh-autoprofile:start\r\nuse_gh_autoprofile alice\r\n# gh-autoprofile:end\r\nafter\r\n"
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
@@ -39,43 +39,31 @@ func TestNativePinCleanupAndUnpin(t *testing.T) {
 	}
 	log := filepath.Join(home, "calls")
 	t.Setenv("TEST_DIRENV_LOG", log)
-	if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$TEST_DIRENV_LOG\"\n"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte("#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> \"$TEST_DIRENV_LOG\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPin("alice", dir, "", "", "", false); err == nil || !strings.Contains(err.Error(), "direnv deny") {
-		t.Fatalf("expected manual cleanup: %v", err)
+	out := captureOnboarding(t, func() error { return runPin("alice", dir, "", "", "", false) })
+	if !strings.Contains(out, "setup --migrate") {
+		t.Fatalf("no pointer to the cleanup command: %s", out)
 	}
-	if err := runUnpin(NewUnpinCmd(), []string{dir}); err == nil || !strings.Contains(err.Error(), "direnv deny") {
-		t.Fatalf("expected manual cleanup before unpin: %v", err)
+	if data, err := os.ReadFile(path); err != nil || string(data) != old {
+		t.Fatalf("pin changed managed bytes: %q %v", data, err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != old {
-		t.Fatalf("managed bytes changed: %q %v", data, err)
-	}
-	if err := os.WriteFile(path, []byte("before\r\nafter\r\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runPin("alice", dir, "", "", "", false); err != nil {
-		t.Fatal(err)
-	}
-	data, err = os.ReadFile(path)
-	if err != nil || string(data) != "before\r\nafter\r\n" {
-		t.Fatalf("unmanaged bytes: %q %v", data, err)
+	if calls, _ := os.ReadFile(log); len(calls) != 0 {
+		t.Fatalf("pin revoked authorization: %q", calls)
 	}
 	if err := runUnpin(NewUnpinCmd(), []string{dir}); err != nil {
 		t.Fatal(err)
 	}
-	data, err = os.ReadFile(path)
-	if err != nil || string(data) != "before\r\nafter\r\n" {
-		t.Fatalf("unpin changed unmanaged bytes: %q %v", data, err)
+	if data, err := os.ReadFile(path); err != nil || string(data) != "before\r\nafter\r\n" {
+		t.Fatalf("unpin did not keep only the unmanaged bytes: %q %v", data, err)
 	}
 	calls, _ := os.ReadFile(log)
-	if string(calls) != "" {
-		t.Fatalf("unexpected authorization calls: %q", calls)
+	if string(calls) != "deny "+path+"\n" {
+		t.Fatalf("authorization calls: %q", calls)
 	}
 }
-
-func TestNativePinRefusesUnsafeCleanup(t *testing.T) {
+func TestUnpinRefusesUnsafeEnvrcCleanup(t *testing.T) {
 	for _, kind := range []string{"malformed", "symlink", "deny"} {
 		t.Run(kind, func(t *testing.T) {
 			home := onboardingHome(t)
@@ -113,7 +101,7 @@ func TestNativePinRefusesUnsafeCleanup(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := runPin("alice", dir, "", "", "", false); err == nil {
+			if err := runUnpin(NewUnpinCmd(), []string{dir}); err == nil {
 				t.Fatal("unsafe cleanup accepted")
 			}
 			after, _ := os.ReadFile(pins)
@@ -127,8 +115,7 @@ func TestNativePinRefusesUnsafeCleanup(t *testing.T) {
 		})
 	}
 }
-
-func TestNativePinRefusesEnvrcChangedDuringDeny(t *testing.T) {
+func TestUnpinRefusesEnvrcChangedDuringDeny(t *testing.T) {
 	home := onboardingHome(t)
 	dir := filepath.Join(home, "repo")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -150,8 +137,8 @@ func TestNativePinRefusesEnvrcChangedDuringDeny(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte("#!/bin/sh\nprintf 'concurrent\\n' >> \"$2\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	err := runPin("alice", dir, "", "", "", false)
-	if err == nil || !strings.Contains(err.Error(), "direnv deny") {
+	err := runUnpin(NewUnpinCmd(), []string{dir})
+	if err == nil || !strings.Contains(err.Error(), "changed during cleanup") {
 		t.Fatalf("missing failure: %v", err)
 	}
 	after, _ := os.ReadFile(pins)
@@ -159,12 +146,11 @@ func TestNativePinRefusesEnvrcChangedDuringDeny(t *testing.T) {
 		t.Fatal("pin changed")
 	}
 	after, _ = os.ReadFile(path)
-	if string(after) != content {
+	if string(after) != content+"concurrent\n" {
 		t.Fatalf("concurrent change lost: %q", after)
 	}
 }
-
-func TestNativePinHelperFailureRestoresRegistryAndEnvrc(t *testing.T) {
+func TestUnpinHelperFailureRestoresRegistryAndEnvrc(t *testing.T) {
 	home := onboardingHome(t)
 	dir := filepath.Join(home, "repo")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -194,8 +180,8 @@ func TestNativePinHelperFailureRestoresRegistryAndEnvrc(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("GIT_CONFIG_GLOBAL")+".lock", []byte("busy"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	err = runPin("alice", dir, "", "", "", false)
-	if err == nil || !strings.Contains(err.Error(), "direnv deny") {
+	err = runUnpin(NewUnpinCmd(), []string{dir})
+	if err == nil || !strings.Contains(err.Error(), "authorization was revoked") {
 		t.Fatalf("missing rollback: %v", err)
 	}
 	after, _ := os.ReadFile(pins)
@@ -216,7 +202,6 @@ func TestNativePinHelperFailureRestoresRegistryAndEnvrc(t *testing.T) {
 		}
 	}
 }
-
 func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
@@ -253,6 +238,11 @@ func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 			}
 			pins, _ := config.PinsFilePath()
 			beforePins, _ := os.ReadFile(pins)
+			realGit, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapper := "#!/bin/sh\ncase \"$*\" in *'--unset-all include.path'*) exit 1;; esac\nexec " + fmt.Sprintf("%q", realGit) + " \"$@\"\n"
 			const good = "outside\n# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\n"
 			if err := os.WriteFile(filepath.Join(first, ".envrc"), []byte(good), 0600); err != nil {
 				t.Fatal(err)
@@ -260,10 +250,13 @@ func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(second, ".envrc"), []byte("# gh-autoprofile:start\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(home, "bin", "git"), []byte(wrapper), 0700); err != nil {
+				t.Fatal(err)
+			}
 			setup := NewSetupCmd()
-			setup.SetArgs([]string{"--native", "--git-identity"})
-			if err := setup.Execute(); err == nil || !strings.Contains(err.Error(), "direnv deny") {
-				t.Fatalf("expected cleanup rollback: %v", err)
+			setup.SetArgs([]string{"--git-identity"})
+			if err := setup.Execute(); err == nil || !strings.Contains(err.Error(), "migration failed") {
+				t.Fatalf("expected migration failure: %v", err)
 			}
 			settings, err := config.LoadSettings()
 			if err != nil || settings.Native || settings.GitIdentity != identity {
@@ -275,7 +268,7 @@ func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 			}
 			data, _ := os.ReadFile(filepath.Join(first, ".envrc"))
 			if string(data) != good {
-				t.Fatalf("envrc not restored: %q", data)
+				t.Fatalf("envrc touched before the commit point: %q", data)
 			}
 			afterHelpers, err := gitcred.SnapshotHosts([]string{"github.com", "github.example.test"})
 			if err != nil {
@@ -293,272 +286,7 @@ func TestNativeMigrationFailureRollsBackHostHelpersAndIdentity(t *testing.T) {
 	}
 }
 
-func TestNativeMigrationRollbackPreservesConcurrentEnvrcEdit(t *testing.T) {
-	if !shims.NativeGHSupported() {
-		t.Skip("native routing unsupported")
-	}
-	home := onboardingHome(t)
-	first, second := filepath.Join(home, "first"), filepath.Join(home, "second")
-	for _, dir := range []string{first, second} {
-		if err := os.Mkdir(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	registry := &config.PinRegistry{Pins: []config.Pin{{Dir: first, User: "alice"}, {Dir: second, User: "alice"}}}
-	if err := config.SavePins(registry); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.SaveSettings(config.Settings{ExternalShell: true}); err != nil {
-		t.Fatal(err)
-	}
-	pinsPath, err := config.PinsFilePath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	settingsPath := filepath.Join(filepath.Dir(pinsPath), "settings.yml")
-	beforeSettings, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforePins, err := os.ReadFile(pinsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const original = "before\n# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\nafter\n"
-	firstPath, secondPath := filepath.Join(first, ".envrc"), filepath.Join(second, ".envrc")
-	for _, path := range []string{firstPath, secondPath} {
-		if err := os.WriteFile(path, []byte(original), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	preEditPath, editedPath, callsPath := filepath.Join(home, "pre-edit"), filepath.Join(home, "edited"), filepath.Join(home, "calls")
-	t.Setenv("TEST_FIRST_ENVRC", firstPath)
-	t.Setenv("TEST_SECOND_ENVRC", secondPath)
-	t.Setenv("TEST_PRE_EDIT", preEditPath)
-	t.Setenv("TEST_EDITED", editedPath)
-	t.Setenv("TEST_DIRENV_CALLS", callsPath)
-	script := `#!/bin/sh
-case "$1" in
-  version) printf '2.0.0\n'; exit 0 ;;
-  deny)
-    printf '%s\n' "$2" >> "$TEST_DIRENV_CALLS"
-    if [ "$2" = "$TEST_FIRST_ENVRC" ]; then exit 0; fi
-    if [ "$2" = "$TEST_SECOND_ENVRC" ]; then
-      cp "$TEST_FIRST_ENVRC" "$TEST_PRE_EDIT" || exit 90
-      printf '# concurrent-edit-unique-rollback-repro\n' >> "$TEST_FIRST_ENVRC" || exit 91
-      cp "$TEST_FIRST_ENVRC" "$TEST_EDITED" || exit 92
-      printf 'controlled second deny failure\n' >&2
-      exit 42
-    fi ;;
-esac
-exit 93
-`
-	if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--native", "--migrate"})
-	err = setup.Execute()
-	if err == nil || !strings.Contains(err.Error(), "direnv deny") {
-		t.Fatalf("unexpected setup result: %v", err)
-	}
-	read := func(path string) string {
-		t.Helper()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-	for _, path := range []string{callsPath, preEditPath, editedPath} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("editor or deny invoked: %s: %v", path, err)
-		}
-	}
-	after := read(firstPath)
-	if got := read(secondPath); got != original {
-		t.Fatalf("second .envrc changed: %q", got)
-	}
-	if got := read(settingsPath); got != string(beforeSettings) {
-		t.Fatalf("settings not restored: %q", got)
-	}
-	if got := read(pinsPath); got != string(beforePins) {
-		t.Fatalf("pins changed: %q", got)
-	}
-	settings, err := config.LoadSettings()
-	if err != nil || settings.Native || !settings.ExternalShell {
-		t.Fatalf("settings state: %+v %v", settings, err)
-	}
-	if after != original {
-		t.Errorf("original managed bytes changed: %q", after)
-	}
-}
-
-func TestNativeSetupWithoutMigrationRefusesManagedEnvrc(t *testing.T) {
-	if !shims.NativeGHSupported() {
-		t.Skip("native routing unsupported")
-	}
-	for _, existing := range []bool{false, true} {
-		for _, implicit := range []bool{false, true} {
-			for _, malformed := range []bool{false, true} {
-				t.Run(fmt.Sprintf("existing=%t/implicit=%t/malformed=%t", existing, implicit, malformed), func(t *testing.T) {
-					home := onboardingHome(t)
-					dir := filepath.Join(home, "repo")
-					if err := os.Mkdir(dir, 0700); err != nil {
-						t.Fatal(err)
-					}
-					if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: dir, User: "alice"}}}); err != nil {
-						t.Fatal(err)
-					}
-					if err := config.SaveSettings(config.Settings{ExternalShell: true, Native: implicit}); err != nil {
-						t.Fatal(err)
-					}
-					if existing {
-						setup := NewSetupCmd()
-						setup.SetArgs([]string{"--native"})
-						if err := setup.Execute(); err != nil {
-							t.Fatal(err)
-						}
-						if err := config.SaveSettings(config.Settings{ExternalShell: true, Native: implicit}); err != nil {
-							t.Fatal(err)
-						}
-					}
-					path := filepath.Join(dir, ".envrc")
-					managed := "before\r\n# gh-autoprofile:start\r\nuse_gh_autoprofile alice\r\n# gh-autoprofile:end\r\nafter\r\n"
-					if malformed {
-						managed = "before\n# gh-autoprofile:start\n"
-					}
-					if err := os.WriteFile(path, []byte(managed), 0600); err != nil {
-						t.Fatal(err)
-					}
-					pinsPath, err := config.PinsFilePath()
-					if err != nil {
-						t.Fatal(err)
-					}
-					settingsPath := filepath.Join(filepath.Dir(pinsPath), "settings.yml")
-					shim, err := shims.GHPath()
-					if err != nil {
-						t.Fatal(err)
-					}
-					helper, err := gitcred.HelperPath()
-					if err != nil {
-						t.Fatal(err)
-					}
-					identity, err := gitidentity.Path()
-					if err != nil {
-						t.Fatal(err)
-					}
-					paths := []string{path, pinsPath, settingsPath, shim, filepath.Join(filepath.Dir(pinsPath), "native-gh-targets.json"), helper, os.Getenv("GIT_CONFIG_GLOBAL"), identity}
-					before := make([]setupFileSnapshot, len(paths))
-					for i, p := range paths {
-						before[i], err = snapshotSetupFile(p)
-						if err != nil {
-							t.Fatal(err)
-						}
-					}
-					log := filepath.Join(home, "direnv-calls")
-					t.Setenv("TEST_DIRENV_LOG", log)
-					if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$TEST_DIRENV_LOG\"\n"), 0700); err != nil {
-						t.Fatal(err)
-					}
-					for range 2 {
-						setup := NewSetupCmd()
-						if !implicit {
-							setup.SetArgs([]string{"--native"})
-						}
-						err = setup.Execute()
-						if err == nil || !strings.Contains(err.Error(), "direnv deny") || !strings.Contains(err.Error(), path) {
-							t.Fatalf("expected manual cleanup refusal: %v", err)
-						}
-						for i, p := range paths {
-							after, err := snapshotSetupFile(p)
-							if err != nil || !reflect.DeepEqual(before[i], after) {
-								t.Errorf("%s changed: %v", p, err)
-							}
-						}
-					}
-					if _, err := os.Stat(log); !os.IsNotExist(err) {
-						t.Fatalf("direnv invoked: %v", err)
-					}
-					if err := os.WriteFile(path, []byte("before\r\nafter\r\n"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					setup := NewSetupCmd()
-					if !implicit {
-						setup.SetArgs([]string{"--native"})
-					}
-					if err := setup.Execute(); err != nil {
-						t.Fatal(err)
-					}
-					if data, err := os.ReadFile(path); err != nil || string(data) != "before\r\nafter\r\n" {
-						t.Fatalf("unmanaged envrc changed: %v", err)
-					}
-				})
-			}
-		}
-	}
-}
-
-func TestNativeMigrationManualCleanupRetry(t *testing.T) {
-	if !shims.NativeGHSupported() {
-		t.Skip("native routing unsupported")
-	}
-	home := onboardingHome(t)
-	first, second := filepath.Join(home, "first"), filepath.Join(home, "second")
-	for _, dir := range []string{first, second} {
-		if err := os.Mkdir(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	registry := &config.PinRegistry{Pins: []config.Pin{{Dir: first, User: "alice"}, {Dir: second, User: "alice"}}}
-	if err := config.SavePins(registry); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.SaveSettings(config.Settings{ExternalShell: true}); err != nil {
-		t.Fatal(err)
-	}
-	const unmanaged = "before\nafter\n"
-	const managed = "before\n# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\nafter\n"
-	firstPath, secondPath := filepath.Join(first, ".envrc"), filepath.Join(second, ".envrc")
-	for path, content := range map[string]string{firstPath: unmanaged, secondPath: managed} {
-		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	pinsPath, _ := config.PinsFilePath()
-	settingsPath := filepath.Join(filepath.Dir(pinsPath), "settings.yml")
-	beforePins, _ := os.ReadFile(pinsPath)
-	beforeSettings, _ := os.ReadFile(settingsPath)
-	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--native", "--migrate"})
-	if err := setup.Execute(); err == nil || !strings.Contains(err.Error(), secondPath) {
-		t.Fatalf("expected second pin refusal: %v", err)
-	}
-	for path, expected := range map[string]string{firstPath: unmanaged, secondPath: managed, pinsPath: string(beforePins), settingsPath: string(beforeSettings)} {
-		data, err := os.ReadFile(path)
-		if err != nil || string(data) != expected {
-			t.Fatalf("%s changed: %q %v", path, data, err)
-		}
-	}
-	if err := os.WriteFile(secondPath, []byte(unmanaged), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		setup = NewSetupCmd()
-		setup.SetArgs([]string{"--native", "--migrate"})
-		if err := setup.Execute(); err != nil {
-			t.Fatal(err)
-		}
-		for _, path := range []string{firstPath, secondPath} {
-			data, err := os.ReadFile(path)
-			if err != nil || string(data) != unmanaged {
-				t.Fatalf("unmanaged bytes changed: %q %v", data, err)
-			}
-		}
-	}
-}
-
-func TestNativeSetupWithoutMigrationExportPin(t *testing.T) {
+func TestSetupConvertsExportPinWithoutMigrateFlag(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
 	}
@@ -579,15 +307,17 @@ func TestNativeSetupWithoutMigrationExportPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--native"})
 	if err := setup.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != content {
-		t.Fatalf("export envrc changed: %v", err)
+	registry, err := config.LoadPins()
+	if err != nil || len(registry.Pins) != 1 || registry.Pins[0].Mode != config.ModeWrapper {
+		t.Fatalf("export pin not converted: %+v %v", registry, err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("managed-only envrc not removed: %v", err)
 	}
 }
-
 func TestNativeSetupWithoutMigrationFreshNoDirenv(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")

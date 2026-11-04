@@ -20,18 +20,12 @@ func TestNativeLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := InstallGH(first, "/usr/bin/gh"); err != nil {
-		t.Fatal(err)
-	}
 	path, err := InstallNativeGH(first)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !IsNativeGHInstalled() || !IsGHInstalled() {
 		t.Fatal("native shim not detected")
-	}
-	if ok, err := TargetsGH("/different/gh"); err != nil || !ok {
-		t.Fatalf("runtime target: %v %v", ok, err)
 	}
 	if _, err := InstallNativeGH(first); err != nil {
 		t.Fatal(err)
@@ -47,12 +41,6 @@ func TestNativeLifecycle(t *testing.T) {
 	}
 	if target, err := os.Readlink(path); err != nil || target != second {
 		t.Fatalf("target %q: %v", target, err)
-	}
-	if _, err := InstallGH(second, "/usr/bin/gh"); err != nil {
-		t.Fatal(err)
-	}
-	if IsNativeGHInstalled() || !IsGHInstalled() {
-		t.Fatal("legacy transition failed")
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 	"testing"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitidentity"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
 
@@ -55,6 +55,50 @@ func onboardingHome(t *testing.T) string {
 	return home
 }
 
+// breakMigration makes the migration step fail after everything setup applies
+// before it, by failing the Git include registration that --git-identity
+// triggers. Callers must pass --git-identity so the migration actually runs.
+func breakMigration(t *testing.T) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$*\" in *'--unset-all include.path'*) exit 1;; esac\nexec " + fmt.Sprintf("%q", realGit) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), "bin", "git"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeLegacyShim seeds the file an old setup generated at the gh path. Raw
+// bytes keep the test independent of any generator.
+func writeLegacyShim(t *testing.T, extension, realGH string) {
+	t.Helper()
+	path, err := shims.GHPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "#!/usr/bin/env bash\n# gh-autoprofile-gh-shim\nset -euo pipefail\nGH_PATH='" + realGH + "' exec '" + extension + "' __shim-gh \"$@\"\n"
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeManagedEnvrc writes the block the retired direnv modes managed, with
+// optional extra lines inside it, as raw bytes.
+func writeManagedEnvrc(t *testing.T, dir, user, inside string) string {
+	t.Helper()
+	path := filepath.Join(dir, ".envrc")
+	content := "# gh-autoprofile:start\nuse_gh_autoprofile " + user + "\n" + inside + "# gh-autoprofile:end\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func captureOnboarding(t *testing.T, run func() error) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -89,7 +133,7 @@ func TestSetupShortAliasOptInAndPreflight(t *testing.T) {
 		{name: "identical", initial: "aa: autoaccount\n", want: "aa: autoaccount\n", optIn: true},
 		{name: "collision", initial: "aa: dangerous\n", want: "aa: dangerous\n", optIn: true},
 		{name: "missing extension", initial: "{}\n", want: "{}\n", optIn: true, missingExtension: true},
-		{name: "managed envrc", initial: "{}\n", want: "{}\n", optIn: true, blocked: true},
+		{name: "failed setup", initial: "{}\n", want: "{}\n", optIn: true, blocked: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := onboardingHome(t)
@@ -116,24 +160,18 @@ esac
 				t.Fatal(err)
 			}
 			if tc.blocked {
-				dir := filepath.Join(home, "work")
-				if err := os.Mkdir(dir, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{{Dir: dir, User: "alice"}}}); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, ".envrc"), []byte("# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
+				breakMigration(t)
 			}
 			command := NewSetupCmd()
 			var out, errout bytes.Buffer
 			command.SetOut(&out)
 			command.SetErr(&errout)
-			args := []string{"--native", "--no-shell-rc"}
+			args := []string{"--no-shell-rc"}
 			if tc.optIn {
 				args = append(args, "--alias")
+			}
+			if tc.blocked {
+				args = append(args, "--git-identity")
 			}
 			command.SetArgs(args)
 			err := command.Execute()
@@ -179,11 +217,11 @@ func TestSetupRestoresShellRCOnLaterFailure(t *testing.T) {
 			if err := config.SaveSettings(config.Settings{}); err != nil {
 				t.Fatal(err)
 			}
-			lib, err := direnvlib.ShellLibPath()
+			lib, err := legacy.ShellLibPath()
 			if err != nil {
 				t.Fatal(err)
 			}
-			hook, err := direnvlib.ShellHookPath()
+			hook, err := legacy.ShellHookPath()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +300,7 @@ exec %q "$@"
 	}
 }
 
-func TestNativeSetupWithoutDirenvAndRollback(t *testing.T) {
+func TestSetupWithoutDirenv(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
 	}
@@ -295,18 +333,7 @@ func TestNativeSetupWithoutDirenvAndRollback(t *testing.T) {
 	if err != nil || !settings.Native || !settings.ExternalShell || !shims.IsNativeGHInstalled() {
 		t.Fatalf("doctor --fix lost native selection: %+v, %v", settings, err)
 	}
-	command := NewSetupCmd()
-	command.SetArgs([]string{"--native=false"})
-	captureOnboarding(t, command.Execute)
-	settings, err = config.LoadSettings()
-	if err != nil || settings.Native || !settings.ExternalShell || shims.IsNativeGHInstalled() || !shims.IsGHInstalled() {
-		t.Fatalf("rollback failed: %+v, %v", settings, err)
-	}
-	if !gitcred.CheckConfigured() || !gitcred.IsInstalled() {
-		t.Fatal("rollback unexpectedly removed the Git credential helper")
-	}
 }
-
 func TestNativeSetupFailuresDoNotPersistMode(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
@@ -337,14 +364,11 @@ func TestNativeSetupFailuresDoNotPersistMode(t *testing.T) {
 			if err != nil || settings.Native {
 				t.Fatalf("failed setup persisted native mode: %+v, %v", settings, err)
 			}
-			if _, err := os.Stat(filepath.Join(home, "config", "gh-autoprofile", "hook.sh")); !os.IsNotExist(err) {
-				t.Fatalf("failed setup installed hook: %v", err)
-			}
 		})
 	}
 }
 
-func TestNativeRollbackRetainsExistingHelper(t *testing.T) {
+func TestSetupRetainsExistingHelper(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
 	}
@@ -359,110 +383,77 @@ func TestNativeRollbackRetainsExistingHelper(t *testing.T) {
 	if err := gitcred.ConfigureGit(); err != nil {
 		t.Fatal(err)
 	}
-	for _, flags := range [][]string{{"--native", "--no-shell-rc"}, {"--native=false"}} {
-		command := NewSetupCmd()
-		command.SetArgs(flags)
-		captureOnboarding(t, command.Execute)
-	}
+	command := NewSetupCmd()
+	command.SetArgs([]string{"--no-shell-rc"})
+	captureOnboarding(t, command.Execute)
 	if !gitcred.IsInstalled() || !gitcred.CheckConfigured() {
-		t.Fatal("rollback removed previously configured helper")
+		t.Fatal("setup removed previously configured helper")
 	}
 }
-
-func TestNativeTransitionRestoresRequiredAssetsOnWriteFailure(t *testing.T) {
+func TestSetupRestoresRequiredAssetsOnLaterFailure(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
 	}
-	for _, prior := range []string{"missing", "legacy", "native", "native-rollback"} {
-		for _, failing := range []string{"hook", "library"} {
-			t.Run(prior+"/"+failing, func(t *testing.T) {
-				home := onboardingHome(t)
-				if prior == "legacy" {
-					if _, err := shims.InstallGH("/old/extension", "/old/gh"); err != nil {
-						t.Fatal(err)
-					}
-					if err := config.SaveSettings(config.Settings{ExternalShell: true}); err != nil {
-						t.Fatal(err)
-					}
-				} else if strings.HasPrefix(prior, "native") {
-					ext := filepath.Join(home, "old-extension")
-					if err := os.WriteFile(ext, []byte("#!/bin/sh\n"), 0700); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := shims.InstallNativeGH(ext); err != nil {
-						t.Fatal(err)
-					}
-					if err := config.SaveSettings(config.Settings{Native: true, ExternalShell: true}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				gitCmd := exec.Command("git", "config", "--global", "--add", "credential.https://github.com.helper", "prior-helper")
-				if out, err := gitCmd.CombinedOutput(); err != nil {
-					t.Fatalf("git config: %s %v", out, err)
-				}
-				configDir := filepath.Join(home, "config", "gh-autoprofile")
-				if err := os.MkdirAll(configDir, 0700); err != nil {
+	for _, prior := range []string{"missing", "legacy", "native"} {
+		t.Run(prior, func(t *testing.T) {
+			home := onboardingHome(t)
+			if prior == "legacy" {
+				writeLegacyShim(t, "/old/extension", "/old/gh")
+				if err := config.SaveSettings(config.Settings{ExternalShell: true}); err != nil {
 					t.Fatal(err)
 				}
-				helper := filepath.Join(configDir, "git-credential-helper")
-				if err := os.WriteFile(helper, []byte("#!/usr/bin/env bash\nset -euo pipefail\nexec '/old/extension' __git-credential \"$@\"\n"), 0711); err != nil {
+			} else if prior == "native" {
+				ext := filepath.Join(home, "old-extension")
+				if err := os.WriteFile(ext, []byte("#!/bin/sh\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				lib, err := direnvlib.ShellLibPath()
-				if err != nil {
+				if _, err := shims.InstallNativeGH(ext); err != nil {
 					t.Fatal(err)
 				}
-				hook, err := direnvlib.ShellHookPath()
-				if err != nil {
+				if err := config.SaveSettings(config.Settings{Native: true, ExternalShell: true}); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.MkdirAll(filepath.Dir(lib), 0700); err != nil {
+			}
+			if out, err := exec.Command("git", "config", "--global", "--add", "credential.https://github.com.helper", "prior-helper").CombinedOutput(); err != nil {
+				t.Fatalf("git config: %s %v", out, err)
+			}
+			configDir := filepath.Join(home, "config", "gh-autoprofile")
+			if err := os.MkdirAll(configDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			helper := filepath.Join(configDir, "git-credential-helper")
+			if err := os.WriteFile(helper, []byte("#!/usr/bin/env bash\nset -euo pipefail\nexec '/old/extension' __git-credential \"$@\"\n"), 0711); err != nil {
+				t.Fatal(err)
+			}
+			shim, _ := shims.GHPath()
+			paths := []string{shim, filepath.Join(configDir, "native-gh-targets.json"), helper, filepath.Join(configDir, "settings.yml")}
+			before := make([]setupFileSnapshot, len(paths))
+			for i, path := range paths {
+				var err error
+				if before[i], err = snapshotSetupFile(path); err != nil {
 					t.Fatal(err)
 				}
-				for name, path := range map[string]string{"hook": hook, "library": lib} {
-					if name == failing {
-						if err := os.Mkdir(path, 0700); err != nil {
-							t.Fatal(err)
-						}
-					} else if prior != "missing" {
-						if err := os.WriteFile(path, []byte("previous "+name+"\n"), 0640); err != nil {
-							t.Fatal(err)
-						}
-					}
+			}
+			// The proxy and helper are already replaced when the migration fails.
+			breakMigration(t)
+			command := NewSetupCmd()
+			command.SetArgs([]string{"--no-shell-rc", "--git-identity"})
+			if err := command.Execute(); err == nil {
+				t.Fatal("expected migration failure")
+			}
+			for i, path := range paths {
+				after, err := snapshotSetupFile(path)
+				if err != nil || !reflect.DeepEqual(before[i], after) {
+					t.Errorf("%s changed: before exists=%t mode=%v bytes=%d; after exists=%t mode=%v bytes=%d; err %v", path, before[i].exists, before[i].mode, len(before[i].data), after.exists, after.mode, len(after.data), err)
 				}
-				shim, _ := shims.GHPath()
-				paths := []string{shim, filepath.Join(configDir, "native-gh-targets.json"), helper, filepath.Join(configDir, "settings.yml"), lib, hook}
-				before := make([]setupFileSnapshot, len(paths))
-				for i, path := range paths {
-					before[i], err = snapshotSetupFile(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				command := NewSetupCmd()
-				flag := "--native"
-				if prior == "native-rollback" {
-					flag = "--native=false"
-				}
-				command.SetArgs([]string{flag, "--no-shell-rc"})
-				if err := command.Execute(); err == nil {
-					t.Fatal("expected asset installation failure")
-				}
-				for i, path := range paths {
-					after, err := snapshotSetupFile(path)
-					if err != nil || !reflect.DeepEqual(before[i], after) {
-						t.Errorf("%s changed: before exists=%t mode=%v bytes=%d; after exists=%t mode=%v bytes=%d; err %v", path, before[i].exists, before[i].mode, len(before[i].data), after.exists, after.mode, len(after.data), err)
-					}
-				}
-				out, err := exec.Command("git", "config", "--global", "--get-all", "credential.https://github.com.helper").Output()
-				if err != nil || string(out) != "prior-helper\n" {
-					t.Fatalf("helper chain changed: %q %v", out, err)
-				}
-			})
-		}
+			}
+			out, err := exec.Command("git", "config", "--global", "--get-all", "credential.https://github.com.helper").Output()
+			if err != nil || string(out) != "prior-helper\n" {
+				t.Fatalf("helper chain changed: %q %v", out, err)
+			}
+		})
 	}
 }
-
 func TestNativeSetupRestoresAllHostHelperChains(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
@@ -489,15 +480,9 @@ func TestNativeSetupRestoresAllHostHelperChains(t *testing.T) {
 	}
 	trace := filepath.Join(home, "git-trace")
 	t.Setenv("GIT_TRACE", trace)
-	hook, err := direnvlib.ShellHookPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(hook, 0700); err != nil {
-		t.Fatal(err)
-	}
+	breakMigration(t)
 	command := NewSetupCmd()
-	command.SetArgs([]string{"--native", "--no-shell-rc"})
+	command.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 	if err := command.Execute(); err == nil {
 		t.Fatal("expected failure after helper configuration")
 	}
@@ -534,9 +519,7 @@ func TestNativeTransitionFailureRestoresPreviousState(t *testing.T) {
 				}
 				shim, _ := shims.GHPath()
 				if prior == "legacy" {
-					if _, err := shims.InstallGH("/previous/extension", "/previous/gh"); err != nil {
-						t.Fatal(err)
-					}
+					writeLegacyShim(t, "/previous/extension", "/previous/gh")
 				}
 				if prior == "native" {
 					ext := filepath.Join(home, "old-extension")
@@ -678,7 +661,7 @@ func TestExternalShellSetupMigration(t *testing.T) {
 				}
 			}
 			pathBefore := os.Getenv("PATH")
-			for _, flags := range [][]string{{"--no-shell-rc", "--gh-shim", "--native=false"}, {"--migrate"}, {}} {
+			for _, flags := range [][]string{{"--no-shell-rc", "--gh-shim"}, {"--migrate"}, {}} {
 				cmd := NewSetupCmd()
 				cmd.SetArgs(flags)
 				out := captureOnboarding(t, cmd.Execute)
@@ -705,7 +688,9 @@ func TestExternalShellSetupMigration(t *testing.T) {
 			}
 			for _, check := range []func() error{NewDoctorCmd().Execute, NewStatusCmd().Execute} {
 				out := captureOnboarding(t, check)
-				if !strings.Contains(out, "not verified") || strings.Contains(out, "Doctor check passed") || strings.Contains(out, "OK   shell hook") || strings.Contains(out, "shim PATH configured: yes") || strings.Contains(out, "WARN git credential helper") {
+				// Doctor may instead report the concrete gh that wins on PATH, which is
+				// a real check; either way it must not claim verified integration.
+				if !strings.Contains(out, "not verified") && !strings.Contains(out, "plain gh resolves to") || strings.Contains(out, "Doctor check passed") || strings.Contains(out, "shim PATH configured: yes") || strings.Contains(out, "WARN git credential helper") {
 					t.Fatalf("misleading diagnostics: %s", out)
 				}
 			}
@@ -722,230 +707,6 @@ func TestExternalShellSetupMigration(t *testing.T) {
 			settings, _ = config.LoadSettings()
 			if settings.ExternalShell {
 				t.Fatal("explicit false did not restore automatic RC mode")
-			}
-		})
-	}
-}
-
-// requireAutoAllowEnvironment skips where direnv auto-allow fails closed by
-// design for the test's temporary paths: a filesystem whose ACLs cannot be
-// inspected (overlayfs, ZFS) or group-writable directories (umask 002). CI sets
-// GH_AUTOPROFILE_REQUIRE_DIRENV_2382=1, which turns the skip into a failure.
-// Call it before onboardingHome, which then replaces the probe's environment.
-func requireAutoAllowEnvironment(t *testing.T) {
-	t.Helper()
-	probe := t.TempDir()
-	bin, repo := filepath.Join(probe, "bin"), filepath.Join(probe, "repo")
-	for _, dir := range []string{bin, repo} {
-		if err := os.Mkdir(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(bin, "direnv"), []byte("#!/bin/sh\n[ \"$1\" = version ] && printf '2.38.2\\n'\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	data := []byte("# gh-autoprofile:start\nexport AUTO_ALLOW_PROBE=1\n# gh-autoprofile:end\n")
-	if err := os.WriteFile(filepath.Join(repo, ".envrc"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", probe)
-	t.Setenv("XDG_DATA_HOME", filepath.Join(probe, "data"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(probe, "config"))
-	t.Setenv("DIRENV_CONFIG", filepath.Join(probe, "direnv"))
-	t.Setenv("DIRENV_REQUIRED", "")
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	err := direnvlib.AllowSnapshot(repo, data)
-	if err == nil || !strings.Contains(err.Error(), "unsupported filesystem for ACL inspection") && !strings.Contains(err.Error(), "unsafe data path component") {
-		return
-	}
-	if os.Getenv("GH_AUTOPROFILE_REQUIRE_DIRENV_2382") == "1" {
-		t.Fatalf("auto-allow must work in this environment: %v", err)
-	}
-	t.Skipf("direnv auto-allow fails closed here by design: %v", err)
-}
-
-func TestRunMigrationRequiresReviewForUnmanagedEnvrc(t *testing.T) {
-	requireAutoAllowEnvironment(t)
-	home := onboardingHome(t)
-	managed := filepath.Join(home, "managed")
-	unmanaged := filepath.Join(home, "unmanaged")
-	for _, dir := range []string{managed, unmanaged} {
-		if err := os.Mkdir(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{
-		{Dir: managed, User: "alice"},
-		{Dir: unmanaged, User: "alice"},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := direnvlib.WriteEnvrc(config.Pin{Dir: managed, User: "alice"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(unmanaged, ".envrc"), []byte("export CUSTOM=1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := direnvlib.WriteEnvrc(config.Pin{Dir: unmanaged, User: "alice"}); err != nil {
-		t.Fatal(err)
-	}
-
-	direnvScript := "#!/bin/sh\n[ \"$1\" = version ] && printf '2.38.2\\n'\n"
-	if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte(direnvScript), 0700); err != nil {
-		t.Fatal(err)
-	}
-
-	report, err := runMigration()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.EnvrcRewritten != 2 || report.Allowed != 1 || report.Warnings != 1 {
-		t.Fatalf("unexpected migration report: %+v", report)
-	}
-	wantReview := filepath.Join(unmanaged, ".envrc")
-	if len(report.ReviewRequired) != 1 || report.ReviewRequired[0] != wantReview {
-		t.Fatalf("review list = %v, want %s", report.ReviewRequired, wantReview)
-	}
-	entries, err := os.ReadDir(filepath.Join(home, "data", "direnv", "allow"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("migration approved unexpected files: %v", entries)
-	}
-	entry, err := os.ReadFile(filepath.Join(home, "data", "direnv", "allow", entries[0].Name()))
-	if err != nil || string(entry) != filepath.Join(managed, ".envrc")+"\n" {
-		t.Fatalf("migration approved the wrong file: %q: %v", entry, err)
-	}
-}
-
-func TestAutoAllowCommandsRejectSharedCheckout(t *testing.T) {
-	for _, operation := range []string{"pin", "setup --migrate"} {
-		for _, tc := range []struct {
-			name      string
-			dirPerm   os.FileMode
-			envrcPerm os.FileMode
-			wantAllow bool
-		}{
-			{name: "owner only", dirPerm: 0700, envrcPerm: 0600, wantAllow: true},
-			{name: "shared directory", dirPerm: 0770, envrcPerm: 0600},
-			{name: "initially shared envrc", dirPerm: 0700, envrcPerm: 0664},
-		} {
-			t.Run(operation+"/"+tc.name, func(t *testing.T) {
-				requireAutoAllowEnvironment(t)
-				home := onboardingHome(t)
-				if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
-					t.Fatal(err)
-				}
-				repo := filepath.Join(home, "repo")
-				if err := os.Mkdir(repo, 0700); err != nil {
-					t.Fatal(err)
-				}
-				pin := config.Pin{Dir: repo, User: "alice"}
-				if err := config.SavePins(&config.PinRegistry{Pins: []config.Pin{pin}}); err != nil {
-					t.Fatal(err)
-				}
-				if err := direnvlib.WriteEnvrc(pin); err != nil {
-					t.Fatal(err)
-				}
-				for path, mode := range map[string]os.FileMode{repo: tc.dirPerm, filepath.Join(repo, ".envrc"): tc.envrcPerm} {
-					if err := os.Chmod(path, mode); err != nil {
-						t.Fatal(err)
-					}
-				}
-				direnvScript := "#!/bin/sh\n[ \"$1\" = version ] && printf '2.38.2\\n'\n"
-				if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte(direnvScript), 0700); err != nil {
-					t.Fatal(err)
-				}
-				command := NewPinCmd()
-				command.SetArgs([]string{"alice", "--dir", repo})
-				if operation == "setup --migrate" {
-					command = NewSetupCmd()
-					command.SetArgs([]string{"--migrate", "--no-shell-rc"})
-				}
-				out := captureOnboarding(t, command.Execute)
-				data, err := os.ReadDir(filepath.Join(home, "data", "direnv", "allow"))
-				if tc.wantAllow {
-					if err != nil || len(data) != 1 {
-						t.Fatalf("owner-only checkout not allowed: %v %v\n%s", data, err, out)
-					}
-				} else {
-					if err == nil {
-						t.Fatalf("mutable checkout auto-authorized entries: %v", data)
-					}
-					if !os.IsNotExist(err) || !strings.Contains(out, "review") {
-						t.Fatalf("missing manual review: %v\n%s", err, out)
-					}
-				}
-			})
-		}
-	}
-}
-
-func TestDoctorWarnsWhenShimTargetIsStale(t *testing.T) {
-	home := onboardingHome(t)
-	if _, err := shims.InstallGH("/tmp/gh-autoprofile", "/old/gh"); err != nil {
-		t.Fatal(err)
-	}
-	out := captureOnboarding(t, NewDoctorCmd().Execute)
-	if !strings.Contains(out, "gh shim target is stale") || !strings.Contains(out, "setup --migrate") {
-		t.Fatalf("missing stale shim warning: %s", out)
-	}
-
-	currentGH := filepath.Join(home, "bin", "gh")
-	if _, err := shims.InstallGH("/tmp/gh-autoprofile", currentGH); err != nil {
-		t.Fatal(err)
-	}
-	out = captureOnboarding(t, NewDoctorCmd().Execute)
-	if !strings.Contains(out, "gh shim target matches current gh") || strings.Contains(out, "gh shim target is stale") {
-		t.Fatalf("current shim reported stale: %s", out)
-	}
-}
-
-func TestRunPinOnlyAutoAllowsManagedEnvrc(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		customContent bool
-		wantAllow     bool
-	}{
-		{name: "managed only", wantAllow: true},
-		{name: "unmanaged content", customContent: true, wantAllow: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			requireAutoAllowEnvironment(t)
-			home := onboardingHome(t)
-			if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
-				t.Fatal(err)
-			}
-			repo := filepath.Join(home, "repo")
-			if err := os.Mkdir(repo, 0700); err != nil {
-				t.Fatal(err)
-			}
-			if tc.customContent {
-				if err := os.WriteFile(filepath.Join(repo, ".envrc"), []byte("export CUSTOM=1\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			direnvScript := "#!/bin/sh\n[ \"$1\" = version ] && printf '2.38.2\\n'\n"
-			if err := os.WriteFile(filepath.Join(home, "bin", "direnv"), []byte(direnvScript), 0700); err != nil {
-				t.Fatal(err)
-			}
-
-			output := captureOnboarding(t, func() error {
-				return runPin("alice", repo, "", "", "", false)
-			})
-			entries, err := os.ReadDir(filepath.Join(home, "data", "direnv", "allow"))
-			if tc.wantAllow {
-				if err != nil || len(entries) != 1 {
-					t.Fatalf("managed .envrc was not allowed: %v, %v", entries, err)
-				}
-			} else {
-				if err == nil {
-					t.Fatalf("unmanaged .envrc was allowed: %v", entries)
-				}
-				if !strings.Contains(output, "contains unmanaged content") {
-					t.Fatalf("missing manual review warning: %s", output)
-				}
 			}
 		})
 	}
@@ -971,9 +732,7 @@ func TestManagedIdentityOnboarding(t *testing.T) {
 	if err := config.SavePins(registry); err != nil {
 		t.Fatal(err)
 	}
-	if err := direnvlib.WriteEnvrc(registry.Pins[0]); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedEnvrc(t, repo, "alice", "export GIT_AUTHOR_EMAIL=alice@example.test\n")
 	setup := NewSetupCmd()
 	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 	captureOnboarding(t, setup.Execute)
@@ -982,7 +741,7 @@ func TestManagedIdentityOnboarding(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(repo, ".envrc"))
 	if strings.Contains(string(data), "alice@example.test") {
-		t.Fatal("setup did not migrate legacy environment identity")
+		t.Fatal("setup left the environment identity of the retired modes in .envrc")
 	}
 	if got := git("-C", repo, "var", "GIT_AUTHOR_IDENT"); !strings.HasPrefix(got, "Alice <alice@example.test>") {
 		t.Fatal(got)
@@ -1010,15 +769,13 @@ func TestManagedIdentityOnboarding(t *testing.T) {
 	}
 }
 
-func TestFailedIdentityEnablePreservesLegacyIdentity(t *testing.T) {
+func TestFailedIdentityEnablePreservesEnvrcAndSettings(t *testing.T) {
 	home := onboardingHome(t)
 	registry := &config.PinRegistry{Pins: []config.Pin{{Dir: home, User: "alice", GitName: "Legacy", GitEmail: "legacy@example.test"}}}
 	if err := config.SavePins(registry); err != nil {
 		t.Fatal(err)
 	}
-	if err := direnvlib.WriteEnvrc(registry.Pins[0]); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedEnvrc(t, home, "alice", "export GIT_AUTHOR_EMAIL=legacy@example.test\n")
 	before, _ := os.ReadFile(filepath.Join(home, ".envrc"))
 	global := os.Getenv("GIT_CONFIG_GLOBAL")
 	if err := os.WriteFile(global+".lock", []byte("busy"), 0600); err != nil {
@@ -1035,14 +792,7 @@ func TestFailedIdentityEnablePreservesLegacyIdentity(t *testing.T) {
 	}
 	after, _ := os.ReadFile(filepath.Join(home, ".envrc"))
 	if string(before) != string(after) {
-		t.Fatal("failed enable changed legacy envrc")
-	}
-	if err := direnvlib.WriteEnvrc(registry.Pins[0]); err != nil {
-		t.Fatal(err)
-	}
-	after, _ = os.ReadFile(filepath.Join(home, ".envrc"))
-	if !strings.Contains(string(after), "legacy@example.test") {
-		t.Fatal("later envrc write stripped legacy identity")
+		t.Fatal("failed enable changed the envrc")
 	}
 	if err := os.Remove(global + ".lock"); err != nil {
 		t.Fatal(err)
@@ -1063,9 +813,10 @@ func TestLockedGlobalPinUnpinAndMigrationAreRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 	captureOnboarding(t, setup.Execute)
 	captureOnboarding(t, func() error { return runPin("alice", repo, "original@example.test", "Original", "", false) })
+	writeManagedEnvrc(t, repo, "alice", "")
 	pinsPath, _ := config.PinsFilePath()
 	includePath, _ := gitidentity.Path()
 	paths := []string{pinsPath, includePath, filepath.Join(repo, ".envrc"), os.Getenv("GIT_CONFIG_GLOBAL")}
@@ -1155,9 +906,6 @@ func TestUnpinRequiresExactPin(t *testing.T) {
 
 func TestOnboardingMutationLock(t *testing.T) {
 	home := onboardingHome(t)
-	if err := direnvlib.InstallShellLib("/bin/sh", "/bin/sh"); err != nil {
-		t.Fatal(err)
-	}
 	unlock, err := config.LockMutations()
 	if err != nil {
 		t.Fatal(err)
@@ -1188,9 +936,10 @@ func TestOnboardingMutationLock(t *testing.T) {
 func TestUnpinCleanupFailureRetainsPin(t *testing.T) {
 	home := onboardingHome(t)
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 	captureOnboarding(t, setup.Execute)
 	captureOnboarding(t, func() error { return runPin("alice", home, "alice@example.test", "Alice", "", false) })
+	writeManagedEnvrc(t, home, "alice", "")
 	path, _ := config.PinsFilePath()
 	before, _ := os.ReadFile(path)
 	includePath, _ := gitidentity.Path()
@@ -1221,12 +970,9 @@ func TestUnpinMissingResources(t *testing.T) {
 				t.Fatal(err)
 			}
 			setup := NewSetupCmd()
-			setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
+			setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
 			captureOnboarding(t, setup.Execute)
 			captureOnboarding(t, func() error { return runPin("alice", repo, "alice@example.test", "Alice", "", false) })
-			if err := os.Remove(filepath.Join(repo, ".envrc")); err != nil {
-				t.Fatal(err)
-			}
 			if missing == "directory" {
 				if err := os.Remove(repo); err != nil {
 					t.Fatal(err)
@@ -1250,55 +996,6 @@ func TestUnpinMissingResources(t *testing.T) {
 				t.Fatalf("missing resource recreated: %v", err)
 			}
 		})
-	}
-}
-
-func TestPinEnvrcWriteFailureRestoresIdentity(t *testing.T) {
-	home := onboardingHome(t)
-	repo := filepath.Join(home, "repo")
-	if out, err := exec.Command("git", "init", "--quiet", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %s %v", out, err)
-	}
-	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
-	captureOnboarding(t, setup.Execute)
-	captureOnboarding(t, func() error { return runPin("alice", repo, "original@example.test", "Original", "", false) })
-	pinsPath, _ := config.PinsFilePath()
-	includePath, _ := gitidentity.Path()
-	envrc := filepath.Join(repo, ".envrc")
-	target := filepath.Join(home, "existing.envrc")
-	if err := os.Rename(envrc, target); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, envrc); err != nil {
-		t.Fatal(err)
-	}
-	before := make(map[string]string)
-	for _, path := range []string{pinsPath, includePath, target} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		before[path] = string(data)
-	}
-	err := runPin("alice", repo, "changed@example.test", "Changed", "", true)
-	if err == nil || !strings.Contains(err.Error(), "cannot write .envrc") {
-		t.Fatalf("expected envrc write failure, got: %v", err)
-	}
-	for path, expected := range before {
-		data, err := os.ReadFile(path)
-		if err != nil || string(data) != expected {
-			t.Fatalf("failed pin changed %s: %s %v", path, data, err)
-		}
-	}
-	if got, err := os.Readlink(envrc); err != nil || got != target {
-		t.Fatalf("envrc symlink changed: %q %v", got, err)
-	}
-	for _, variable := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
-		out, err := exec.Command("git", "-C", repo, "var", variable).CombinedOutput()
-		if err != nil || !strings.HasPrefix(string(out), "Original <original@example.test>") {
-			t.Fatalf("failed pin changed %s: %s %v", variable, out, err)
-		}
 	}
 }
 

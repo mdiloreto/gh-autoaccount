@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
 
@@ -219,20 +218,6 @@ func TestSetupMiseRollback(t *testing.T) {
 	requireNative(t)
 	register := func(dir string) string { return "config set -g --append env._.path " + dir }
 	unregister := func(dir string) string { return "config set -g --remove env._.path " + dir }
-	breakHook := func(t *testing.T) {
-		t.Helper()
-		hook, err := direnvlib.ShellHookPath()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.RemoveAll(hook); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(hook, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	t.Run("config read fails", func(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
@@ -276,9 +261,9 @@ func TestSetupMiseRollback(t *testing.T) {
 		if err := os.WriteFile(fm.toml, []byte(dir+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		breakHook(t)
-		if err := runSetupArgsErr("--native", "--no-shell-rc", "--mise"); err == nil {
-			t.Fatal("expected hook failure")
+		breakMigration(t)
+		if err := runSetupArgsErr("--no-shell-rc", "--mise", "--git-identity"); err == nil {
+			t.Fatal("expected migration failure")
 		}
 		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir)}) || !reflect.DeepEqual(fileLines(t, fm.toml), []string{dir}) {
 			t.Fatalf("pre-existing entry lost: %q, %q", got, fileLines(t, fm.toml))
@@ -288,9 +273,9 @@ func TestSetupMiseRollback(t *testing.T) {
 	t.Run("later step fails after registration", func(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
-		breakHook(t)
-		if err := runSetupArgsErr("--native", "--no-shell-rc", "--mise"); err == nil {
-			t.Fatal("expected hook failure")
+		breakMigration(t)
+		if err := runSetupArgsErr("--no-shell-rc", "--mise", "--git-identity"); err == nil {
+			t.Fatal("expected migration failure")
 		}
 		dir := miseDir(t)
 		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), unregister(dir)}) {
@@ -305,9 +290,9 @@ func TestSetupMiseRollback(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
 		runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
-		breakHook(t)
-		if err := runSetupArgsErr("--migrate"); err == nil {
-			t.Fatal("expected hook failure")
+		breakMigration(t)
+		if err := runSetupArgsErr("--migrate", "--git-identity"); err == nil {
+			t.Fatal("expected migration failure")
 		}
 		dir := miseDir(t)
 		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), register(dir)}) {
@@ -322,9 +307,9 @@ func TestSetupMiseRollback(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
 		runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
-		breakHook(t)
-		if err := runSetupArgsErr("--mise=false"); err == nil {
-			t.Fatal("expected hook failure")
+		breakMigration(t)
+		if err := runSetupArgsErr("--mise=false", "--git-identity"); err == nil {
+			t.Fatal("expected migration failure")
 		}
 		dir := miseDir(t)
 		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), unregister(dir), register(dir)}) {
@@ -338,25 +323,25 @@ func TestSetupMiseRollback(t *testing.T) {
 
 func TestSetupMiseRequiresNativeAndMise(t *testing.T) {
 	requireNative(t)
-	t.Run("without native", func(t *testing.T) {
+	t.Run("native=false with mise", func(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
 		err := runSetupArgsErr("--native=false", "--mise")
-		if err == nil || !strings.Contains(err.Error(), "requires native routing") {
-			t.Fatalf("expected native requirement error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), legacyRemoved) {
+			t.Fatalf("expected the retired-mode error: %v", err)
 		}
 		if len(fm.calls(t)) != 0 || loadSettings(t).Mise {
-			t.Fatal("mise touched without native routing")
+			t.Fatal("mise touched by a refused setup")
 		}
 	})
-	t.Run("leaving native while enabled", func(t *testing.T) {
+	t.Run("native=false while enabled", func(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
 		runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
 		before := fm.calls(t)
 		err := runSetupArgsErr("--native=false")
-		if err == nil || !strings.Contains(err.Error(), "--mise=false") {
-			t.Fatalf("expected guidance to disable mise first: %v", err)
+		if err == nil || !strings.Contains(err.Error(), legacyRemoved) {
+			t.Fatalf("expected the retired-mode error: %v", err)
 		}
 		if settings := loadSettings(t); !settings.Native || !settings.Mise || !shims.IsMiseGHInstalled() || !reflect.DeepEqual(before, fm.calls(t)) {
 			t.Fatalf("refused transition changed state: %+v", settings)
@@ -664,24 +649,6 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	}
 	if got := resolve(); got != toolGH {
 		t.Fatalf("mise's gh not restored after disabling: %s", got)
-	}
-}
-
-func TestSetupDisableMiseAndLegacyInOneCommand(t *testing.T) {
-	requireNative(t)
-	home := onboardingHome(t)
-	fm := installFakeMise(t, home)
-	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
-	dir := miseDir(t)
-	runSetupArgs(t, "--native=false", "--mise=false")
-	if settings := loadSettings(t); settings.Native || settings.Mise {
-		t.Fatalf("settings: %+v", settings)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, "gh")); !os.IsNotExist(err) {
-		t.Fatalf("gh-only shim orphaned by the legacy transition: %v", err)
-	}
-	if got := fileLines(t, fm.toml); len(got) != 0 {
-		t.Fatalf("registration left behind: %q", got)
 	}
 }
 

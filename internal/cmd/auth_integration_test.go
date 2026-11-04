@@ -31,8 +31,6 @@ func TestAuthIntegration(t *testing.T) {
 	t.Setenv("GH_AUTOPROFILE_DISABLE_SHIM", "")
 	t.Setenv("GH_AUTOPROFILE_USER", "old-account")
 	t.Setenv("GH_AUTOPROFILE_MODE", "export")
-	t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", "")
-	os.Unsetenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN")
 	t.Setenv("GH_TOKEN", "old-token")
 	t.Setenv("GITHUB_TOKEN", "old-github-token")
 	t.Setenv("TEST_TOKEN_CASE", "good")
@@ -90,7 +88,6 @@ printf '%s|%s|%s|%s\n' "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_MODE" "$GH_TOKEN"
 				t.Error(err)
 			}
 		})
-		t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", "1")
 		t.Setenv("GH_AUTOPROFILE_USER", "bob")
 		t.Setenv("GH_AUTOPROFILE_HOST", "enterprise.example.invalid")
 		t.Setenv("GH_ENTERPRISE_TOKEN", "ambient-enterprise")
@@ -249,7 +246,7 @@ printf '%s|%s|%s|%s\n' "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_MODE" "$GH_TOKEN"
 		}
 	})
 
-	t.Run("export mode requires explicit ambient token opt in", func(t *testing.T) {
+	t.Run("export-mode pin never takes the ambient token", func(t *testing.T) {
 		registry.Pins[1].Mode = config.ModeExport
 		if err := config.SavePins(registry); err != nil {
 			t.Fatal(err)
@@ -279,12 +276,11 @@ printf '%s|%s|%s|%s\n' "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_MODE" "$GH_TOKEN"
 				}
 			}
 		}
-		t.Setenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN", "1")
 		for _, tc := range []struct {
 			user, host, want string
 		}{
 			{"", "", "bob|export|stored-bob|\n"},
-			{"bob", "github.com", "bob|export|old-token|\n"},
+			{"bob", "github.com", "bob|export|stored-bob|\n"},
 			{"bob", "", "bob|export|stored-bob|\n"},
 			{"alice", "github.com", "bob|export|stored-bob|\n"},
 			{"bob", "enterprise.example", "bob|export|stored-bob|\n"},
@@ -295,7 +291,7 @@ printf '%s|%s|%s|%s\n' "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_MODE" "$GH_TOKEN"
 			cmd.Dir = work
 			out, err := cmd.Output()
 			if err != nil || string(out) != tc.want {
-				t.Fatalf("opt-in markers %q/%q: output %q, error %v; want %q", tc.user, tc.host, out, err, tc.want)
+				t.Fatalf("matching markers %q/%q: output %q, error %v; want %q", tc.user, tc.host, out, err, tc.want)
 			}
 		}
 		t.Setenv("GH_AUTOPROFILE_USER", "")

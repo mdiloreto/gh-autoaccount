@@ -22,7 +22,7 @@ chmod 700 "$XDG_CONFIG_HOME/gh-autoprofile"
 ln -s "$git_bin" "$root/bin/git"
 export PATH="$root/bin:$PATH" GH_AUTOPROFILE_REAL_GH="$root/bin/gh"
 export SMOKE_ROOT="$root" GH_TOKEN=smoke-parent-secret GITHUB_TOKEN=smoke-parent-secret
-export GH_AUTOPROFILE_USER=parent GH_AUTOPROFILE_MODE=wrapper GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN=1
+export GH_AUTOPROFILE_USER=parent GH_AUTOPROFILE_MODE=wrapper
 
 cat > "$root/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -131,7 +131,7 @@ for verify in ok mismatch failure; do
     [[ $verify != ok && ! -e $root/child-ran ]]
   fi
 done
-for entry in 'none|||smoke-bob-secret' 'match|bob|github.com|smoke-parent-secret' 'user|bob||smoke-bob-secret' 'host||github.com|smoke-bob-secret' 'wrong-user|alice|github.com|smoke-bob-secret' 'wrong-host|bob|other.example|smoke-bob-secret'; do
+for entry in 'none|||smoke-bob-secret' 'match|bob|github.com|smoke-bob-secret' 'user|bob||smoke-bob-secret' 'host||github.com|smoke-bob-secret' 'wrong-user|alice|github.com|smoke-bob-secret' 'wrong-host|bob|other.example|smoke-bob-secret'; do
   IFS='|' read -r label marker host expected <<< "$entry"
   result=$(GH_AUTOPROFILE_USER="$marker" GH_AUTOPROFILE_HOST="$host" "$candidate" exec --dir "$root/bob" --require-pin -- /bin/sh -c 'printf %s "$GH_TOKEN"')
   [[ $result == "$expected" ]] || { printf 'FAIL: ambient marker %s\n' "$label" >&2; exit 1; }
