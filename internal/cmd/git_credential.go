@@ -126,6 +126,10 @@ func handleGitCredentialGet(req *credentialRequest) error {
 	token, err := ghauth.ResolveToken(context.Background(), ghauth.TokenRequest{User: user, Host: host, TokenCommand: tokenCommand})
 	if err != nil {
 		fmt.Fprint(os.Stdout, "quit=true\n\n")
+		// Only gh resolution errors are surfaced: they name a path, never credential output.
+		if _, ghErr := ghauth.ResolveGHPath(); tokenCommand == "" && ghErr != nil {
+			return fmt.Errorf("cannot resolve selected pin credential: %w", ghErr)
+		}
 		return fmt.Errorf("cannot resolve selected pin credential")
 	}
 
