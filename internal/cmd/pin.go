@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
 	"github.com/spf13/cobra"
 )
 
@@ -22,25 +22,19 @@ func NewPinCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pin <username>",
 		Short: "Pin a GitHub account to a directory",
-		Long: `Pin a GitHub account to a directory. When you cd into the directory,
-the correct credentials and git identity are automatically activated.
+		Long: `Pin a GitHub account to a directory. Plain gh and Git HTTPS in that
+directory and below use the account, in every shell, including agents and cron.
 
-Tokens are injected per-command and never sit in your shell environment. With
-native routing (the default for a fresh install) this covers every shell,
-including agents and cron; legacy wrapper routing is deprecated and only covers
-shells running the prompt hook.
-
-Use --export-token (deprecated; prefer gh autoaccount exec) for directories
-where third-party tools need GH_TOKEN / GITHUB_TOKEN as environment variables.
+Tokens are injected per-command and never sit in your shell environment. For a
+third-party tool that reads GH_TOKEN, run it through gh autoaccount exec.
 
 Use --owner to pin a GitHub organization or user instead of a directory: any
 gh or Git HTTPS access to that owner's repositories uses this account, and
-outranks the directory pin. Owner pins are wrapper-mode only.
+outranks the directory pin.
 
 Examples:
   gh autoaccount pin alice
   gh autoaccount pin bob-work --dir ~/work --git-email bob@example.test
-  gh autoaccount pin alice-freelance --dir ~/freelance --export-token
   gh autoaccount pin bob-work --owner work-org --git-email bob@example.test`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -59,7 +53,9 @@ Examples:
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "Path to SSH private key for this directory")
 	cmd.Flags().StringVar(&host, "host", "", "GitHub hostname")
 	cmd.Flags().StringVar(&tokenCommand, "token-command", "", "Absolute path to credential broker")
-	cmd.Flags().BoolVar(&exportToken, "export-token", false, "Export GH_TOKEN/GITHUB_TOKEN into the shell environment (less secure)")
+	// Retired; kept so a script that passes it gets the replacement, not "unknown flag".
+	cmd.Flags().BoolVar(&exportToken, "export-token", false, "")
+	_ = cmd.Flags().MarkHidden("export-token")
 
 	return cmd
 }
@@ -69,6 +65,9 @@ func runPin(user, dir, gitEmail, gitName, sshKey string, exportToken bool) error
 }
 
 func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand string, exportToken bool) error {
+	if exportToken {
+		return errors.New(legacyRemoved)
+	}
 	// Resolve absolute path
 	absDir, err := config.CanonicalDir(dir)
 	if err != nil {
@@ -92,19 +91,12 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 		return err
 	}
 
-	// Determine mode
-	mode := config.ModeWrapper
-	if exportToken {
-		mode = config.ModeExport
-	}
-
-	// Create pin
 	pin := config.Pin{
 		User:         user,
 		Host:         host,
 		TokenCommand: tokenCommand,
 		Dir:          absDir,
-		Mode:         mode,
+		Mode:         config.ModeWrapper,
 		GitEmail:     gitEmail,
 		GitName:      gitName,
 		SSHKey:       sshKey,
@@ -116,19 +108,6 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 		return err
 	}
 	defer unlock()
-	settings, err := config.LoadSettings()
-	if err != nil {
-		return fmt.Errorf("cannot load setup settings: %w", err)
-	}
-	native := settings.Native && mode == config.ModeWrapper
-	if exportToken {
-		fmt.Fprintln(os.Stderr, "gh-autoaccount: export mode is deprecated: it leaves a token in the environment. Use `gh autoaccount exec -- <command>` for a command-scoped token.")
-	} else if notice := legacyNotice(); !native && notice != "" {
-		fmt.Fprintln(os.Stderr, "gh-autoaccount: "+notice)
-	}
-	if !native && !direnvlib.IsShellLibInstalled() {
-		return fmt.Errorf("direnv shell library not installed. Run first: gh autoaccount setup")
-	}
 	registry, err := config.LoadPins()
 	if err != nil {
 		return fmt.Errorf("cannot load pin registry: %w", err)
@@ -137,59 +116,14 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 	if err := registry.AddPinStrict(pin); err != nil {
 		return err
 	}
-	if native {
-		if err := direnvlib.RequireManualEnvrcCleanup(absDir); err != nil {
-			return err
-		}
-	}
 	if err := savePinsAndIdentity(registry); err != nil {
 		return fmt.Errorf("cannot save pin and Git identity: %w", err)
 	}
-	helpers, err := refreshGitHelpers(registry, previous)
-	if err != nil {
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
 		return err
 	}
 
-	if !native {
-		// Write .envrc
-		autoAllowBefore, autoAllowErr := direnvlib.AutoAllowSafe(absDir)
-		snapshot, err := direnvlib.WriteEnvrcSnapshot(pin)
-		if err != nil {
-			return errors.Join(fmt.Errorf("cannot write .envrc: %w", err), savePinsAndIdentity(previous), gitcred.RestoreHosts(helpers))
-		}
-
-		// Auto-allow .envrc — but never on the user's behalf when content exists
-		// outside the managed block or local permissions permit concurrent writers.
-		if direnvlib.IsInstalled() {
-			if direnvlib.HasUnmanagedContent(snapshot) {
-				fmt.Printf("Warning: .envrc contains unmanaged content — review before authorising.\n")
-				fmt.Printf("  Run manually: direnv allow %s/.envrc\n", absDir)
-			} else if !autoAllowBefore || autoAllowErr != nil {
-				fmt.Printf("Warning: directory or original .envrc permissions require manual review before authorising.\n")
-				if autoAllowErr != nil {
-					fmt.Printf("  Cannot inspect permissions: %v\n", autoAllowErr)
-				}
-				fmt.Printf("  Run manually after reviewing: direnv allow %s/.envrc\n", absDir)
-			} else if safe, gateErr := direnvlib.AutoAllowSafe(absDir); gateErr != nil || !safe {
-				fmt.Printf("Warning: directory or rewritten .envrc permissions require manual review before authorising.\n")
-				if gateErr != nil {
-					fmt.Printf("  Cannot inspect permissions: %v\n", gateErr)
-				}
-				fmt.Printf("  Run manually after reviewing: direnv allow %s/.envrc\n", absDir)
-			} else if err := direnvlib.AllowSnapshot(absDir, snapshot); err != nil {
-				fmt.Printf("Warning: could not auto-allow .envrc: %v\n", err)
-				fmt.Printf("  Run manually: direnv allow %s/.envrc\n", absDir)
-			}
-		}
-	}
-
-	// Summary
-	modeLabel := "wrapper"
-	if mode == config.ModeExport {
-		modeLabel = "export"
-	}
 	fmt.Printf("\nPinned '%s' -> %s\n", user, absDir)
-	fmt.Printf("  Mode:       %s\n", modeLabel)
 	if gitEmail != "" {
 		fmt.Printf("  Git email:  %s\n", gitEmail)
 	}
@@ -199,18 +133,10 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 	if sshKey != "" {
 		fmt.Printf("  SSH key:    %s\n", sshKey)
 	}
-	if !native {
-		fmt.Printf("  .envrc:     %s/.envrc\n", absDir)
+	fmt.Println("\n  Token is injected per-command (never in shell environment).")
+	if legacy.HasManagedEnvrc(absDir) {
+		fmt.Println("  This directory's .envrc still has a retired gh-autoprofile block; run: gh autoaccount setup --migrate")
 	}
-
-	if mode == config.ModeWrapper {
-		fmt.Println("\n  Token is injected per-command (never in shell environment).")
-	} else {
-		fmt.Println("\n  WARNING: Token is exported into shell environment.")
-		fmt.Println("  All child processes can read GH_TOKEN/GITHUB_TOKEN.")
-	}
-	fmt.Println("\ncd into the directory to activate the profile.")
-
 	return nil
 }
 
@@ -281,7 +207,7 @@ func refreshGitHelpers(registry, previous *config.PinRegistry) (gitcred.HelperSn
 // .envrc or direnv: they are selected from the registry per command.
 func runPinOwner(user, owner, gitEmail, gitName, sshKey, host, tokenCommand string, exportToken bool) error {
 	if exportToken {
-		return fmt.Errorf("--export-token is not supported with --owner; owner pins use wrapper mode")
+		return errors.New(legacyRemoved)
 	}
 	pin := config.Pin{User: user, Host: host, TokenCommand: tokenCommand, Owner: owner, Mode: config.ModeWrapper, GitEmail: gitEmail, GitName: gitName}
 	if err := new(config.PinRegistry).AddOwnerPin(pin); err != nil {
@@ -329,7 +255,7 @@ func runPinOwner(user, owner, gitEmail, gitName, sshKey, host, tokenCommand stri
 	}
 	fmt.Println("\n  Token is injected per-command (never in shell environment).")
 	if !gitcred.CheckConfigured() {
-		fmt.Println("  Plain git HTTPS needs the credential helper: gh autoaccount setup --credential-helper")
+		fmt.Println("  Plain git HTTPS needs the credential helper: gh autoaccount setup")
 	}
 	return nil
 }

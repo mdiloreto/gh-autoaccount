@@ -113,10 +113,8 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 		return nil, fmt.Errorf("--expect-user %q: selected profile is %q", policy.ExpectUser, selectedUser)
 	}
 
-	var token, source string
-	// Ambient credentials are an explicit export-mode opt-in. Without it, the
-	// named pin always resolves its own stored credential.
-	allowAmbient := os.Getenv("GH_AUTOPROFILE_ALLOW_AMBIENT_TOKEN") == "1"
+	// The named account always resolves its own stored credential; inherited
+	// token variables never stand in for it.
 	request := ghauth.TokenRequest{User: selectedUser}
 	if pin != nil {
 		request.Host, request.TokenCommand = pin.Host, pin.TokenCommand
@@ -125,21 +123,10 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid selected pin host: %w", err)
 	}
-	markerHost := os.Getenv("GH_AUTOPROFILE_HOST")
-	markerUser := os.Getenv("GH_AUTOPROFILE_USER")
-	markerMatches := false
-	if markerHost != "" && markerUser != "" {
-		normalized, normalizeErr := config.NormalizeHost(markerHost)
-		markerMatches = normalizeErr == nil && normalized == host && strings.EqualFold(markerUser, selectedUser)
-	}
-	if policy.User == "" && pin != nil && pin.TokenCommand == "" && pin.EffectiveMode() == config.ModeExport && allowAmbient && markerMatches {
-		token, source, err = ghauth.GetTokenWithFallbackForHost(context.Background(), request)
-	} else {
-		token, err = ghauth.ResolveToken(context.Background(), request)
-		source = "keyring"
-		if request.TokenCommand != "" {
-			source = "token_command"
-		}
+	token, err := ghauth.ResolveToken(context.Background(), request)
+	source := "keyring"
+	if request.TokenCommand != "" {
+		source = "token_command"
 	}
 	result := &Context{
 		Dir:             absDir,

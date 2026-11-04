@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
-	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
+	"github.com/mdiloreto/gh-autoaccount/internal/legacy"
 	"github.com/spf13/cobra"
 )
 
@@ -16,11 +16,11 @@ func NewUnpinCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unpin [directory]",
 		Short: "Remove a pinned account from a directory or owner",
-		Long: `Remove the gh-autoprofile block from the directory's .envrc and
-delete the pin from the registry. If the .envrc has no other content,
-it will be deleted entirely.
+		Long: `Delete the pin from the registry. A managed block left in the
+directory's .envrc by the retired direnv modes is revoked and removed too, and
+the .envrc is deleted if nothing else remains in it.
 
-With --owner, remove the owner pin instead; no .envrc is involved.
+With --owner, remove the owner pin instead.
 
 Examples:
   gh autoaccount unpin              # unpin current directory
@@ -93,11 +93,6 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no pin found for directory: %s", absDir)
 	}
 	absDir = pin.Dir
-	settings, err := config.LoadSettings()
-	if err != nil {
-		return fmt.Errorf("cannot load setup settings: %w", err)
-	}
-	native := settings.Native && pin.EffectiveMode() == config.ModeWrapper
 
 	user := pin.User
 	previous := &config.PinRegistry{Pins: append([]config.Pin(nil), registry.Pins...)}
@@ -107,16 +102,13 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 	if dirErr != nil && !os.IsNotExist(dirErr) {
 		return fmt.Errorf("cannot inspect directory %s: %w", absDir, dirErr)
 	}
-	if dirErr == nil && native {
-		if err := direnvlib.RequireManualEnvrcCleanup(absDir); err != nil {
-			return err
-		}
-	} else if dirErr == nil {
+	if dirErr == nil {
+		// A block left by the retired direnv modes is revoked and removed with the pin.
 		snapshot, err = snapshotSetupFile(filepath.Join(absDir, ".envrc"))
 		if err != nil {
 			return err
 		}
-		cleaned, err = direnvlib.CleanupManagedEnvrc(absDir)
+		cleaned, err = legacy.CleanupManagedEnvrc(absDir)
 		if err != nil {
 			return fmt.Errorf("cannot clean .envrc: %w", err)
 		}
