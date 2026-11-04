@@ -53,7 +53,6 @@ env -i PATH="$scratch/bin:$PATH" HOME="$scratch/home" \
     fi
     printf "Using Go: %s\nUsing Git: %s\nUsing gh: %s\n%s\n" "$(command -v go)" "$(command -v git)" "$GH_AUTOPROFILE_TEST_GH" "$version"
     go build -o "$TMPDIR/gh-autoprofile" ./cmd/gh-autoaccount
-    go test -count=1 ./scripts
     bash scripts/smoke-agent-workflow.sh "$TMPDIR/gh-autoprofile"
     bash scripts/smoke-native-routing.sh "$TMPDIR/gh-autoprofile"
     bash scripts/smoke-onboarding.sh "$TMPDIR/gh-autoprofile"

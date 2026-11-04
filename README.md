@@ -47,78 +47,37 @@ clears it, including when recovering from a missing stored credential.
 
 ## Installation
 
-The following is a recipe for the intended first beta tag, `v0.1.0-beta.1`, not a
-claim that the tag or its assets have already been published or tested. Check the
-release and its checksums before proceeding. You need GitHub CLI 2.40 or later,
-authenticated accounts, Git, and Bash or zsh on Linux/macOS. Native routing does
-not require direnv or an `.envrc` for a fresh setup; legacy and export workflows do.
-Windows binaries do not imply complete Windows shell integration.
-
-After the tagged release and launcher exist on the new repository's `main`, try
-`gh extension install mdiloreto/gh-autoaccount --pin v0.1.0-beta.1`. GitHub CLI
-may reject pinned installs or upgrades while only prereleases exist because it
-checks `releases/latest`. In that case use the manual binary manifest below. The
-launcher requires GitHub CLI to provide `GH_PATH`, Git and SHA-256 tools; it
-downloads and checks a matching release binary and caches it in `.autoaccount-cache`.
-It supports Linux/macOS amd64 and arm64. If a pinned commit has multiple matching
-prerelease tags, select one explicitly with `GH_AUTOPROFILE_RELEASE_TAG`.
-GitHub CLI records a script extension's pinned commit rather than the requested
-tag. The selected prerelease tag must exist locally and resolve to that commit;
-a SHA without such a tag requires reinstalling a tagged revision. The launcher
-does not automatically upgrade and verifies checksums, not provenance. Removing
-an extension also removes its cached binary and can break an installed shim.
-
-The old and new extensions have different names. Installing the new one does not
-rename or remove the old one, or update your machine's shell configuration. Verify
-in an isolated home first; do not remove a working extension before a replacement
-is verified. A checksum from the same release detects corruption, not publisher
-identity or independent provenance. Verify any claimed attestation separately.
-
-### Manual prerelease binary manifest
-
-Run in Bash only after the tag and release exist, using a trusted real `gh` and an
-account that can access the release. This recipe supports Linux/macOS amd64 and
-arm64. Use an isolated `HOME`/`XDG_DATA_HOME` for initial verification. It refuses
-to overwrite any existing new-name extension; inspect that separately.
+You need GitHub CLI 2.40 or later, authenticated accounts, Git, and Bash or zsh on
+Linux/macOS. Native routing does not require direnv or an `.envrc` for a fresh
+setup; legacy and export workflows do. Windows binaries do not imply complete
+Windows shell integration.
 
 ```bash
-(
-  set -euo pipefail
-  tag=v0.1.0-beta.1
-  case "$(uname -s)" in Linux) os=linux ;; Darwin) os=darwin ;; *) exit 1 ;; esac
-  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) exit 1 ;; esac
-  asset="gh-autoaccount_${tag}_${os}-${arch}"
-  download=$(mktemp -d "${TMPDIR:-/tmp}/gh-autoaccount-beta.XXXXXX")
-  printf 'Downloads: %s\n' "$download"
-  GH_AUTOPROFILE_DISABLE_SHIM=1 command gh release download "$tag" \
-    --repo github.com/mdiloreto/gh-autoaccount --pattern "$asset" --pattern checksums.txt --dir "$download"
-  cd "$download"
-  awk -v asset="$asset" '$2 == asset { print; found++ } END { if (found != 1) exit 1 }' checksums.txt > selected.sha256
-  if command -v sha256sum >/dev/null; then sha256sum --check selected.sha256; else shasum -a 256 --check selected.sha256; fi
-  extdir="${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-autoaccount"
-  if [[ -e $extdir || -L $extdir ]]; then printf 'Extension exists; inspect it first.\n' >&2; exit 1; fi
-  mkdir -p "$extdir"
-  install -m 755 "$asset" "$extdir/gh-autoaccount"
-  if [[ $os == darwin && $arch == arm64 ]]; then codesign --force --sign - "$extdir/gh-autoaccount"; fi
-  manifest_path=${extdir//\'/\'\'}
-  cat > "$extdir/manifest.yml" <<EOF
-owner: mdiloreto
-name: gh-autoaccount
-host: github.com
-tag: $tag
-ispinned: true
-path: '$manifest_path/gh-autoaccount'
-EOF
-  chmod 600 "$extdir/manifest.yml"
-  GH_AUTOPROFILE_DISABLE_SHIM=1 command gh extension list
-  GH_AUTOPROFILE_DISABLE_SHIM=1 command gh autoaccount --version
-)
+gh extension install mdiloreto/gh-autoaccount
+gh autoaccount --version
 ```
 
-The extension directory is under `XDG_DATA_HOME/gh`, defaulting to
-`~/.local/share/gh`. Keep the download directory until verification is complete.
-Do not execute an asset if the checksum check fails. A `404` does not by itself
-distinguish an incorrect account from missing access.
+To install a specific release, add `--pin <tag>` (for example
+`--pin v0.1.0-beta.2`). Releases are beta software even though GitHub does not
+flag them as prereleases; GitHub CLI only installs precompiled extensions from
+the latest release. Checksums in `checksums.txt` detect corruption of a manual
+download, not publisher identity; verify any claimed attestation separately.
+
+The old `gh-autoprofile` extension has a different name. Installing this one does
+not rename or remove it, or update your shell configuration. Verify in an
+isolated home first; do not remove a working extension before a replacement is
+verified.
+
+### Upgrading from v0.1.0-beta.1
+
+Run `gh extension upgrade autoaccount`; a pinned install needs
+`gh extension remove autoaccount` followed by the install command above. Then
+repoint the managed `gh` shim and Git credential helper, which referenced a binary
+cache that the new install no longer has:
+
+```bash
+gh autoaccount setup --migrate
+```
 
 ## Setup and usage
 
@@ -169,6 +128,50 @@ identity is not proof of the authenticated remote account. `--require-pin` rejec
 missing pins before the child runs. Explicit `exec` passes credentials to the child
 and descendants; it is not a sandbox. Export mode deliberately exposes tokens to
 the shell and its children. Never share tokens or private keys in diagnostics.
+
+## Agent skill
+
+**Unreleased: requires a build containing this feature; not in v0.1.0-beta.1.**
+Print the bundled guide with `gh autoaccount skill`. The skill command itself reads
+no authentication or account configuration and needs no setup. Direct binary
+invocation and the native literal management path support credential-free recovery;
+the native path still requires a trusted installed extension path and a valid real
+`gh` binary. Unmodified upstream `gh` may require login before dispatching the
+extension. Installation is explicit and does not change Git, shell, or account
+configuration.
+
+Automatic installation supports Linux and macOS only; on other platforms it fails
+before filesystem changes. Printing the guide is portable; on Windows it can be
+placed manually as `SKILL.md`, but automatic installation is not tested or supported.
+Choose a project-scoped destination:
+
+```bash
+# Project skill, for Codex and OpenCode:
+gh autoaccount skill install --dir .agents/skills
+# Project skill, for Claude Code:
+gh autoaccount skill install --dir .claude/skills
+# Project skill, OpenCode-native location:
+gh autoaccount skill install --dir .opencode/skills
+```
+
+For user-scoped installation, choose the parent for your agent instead:
+
+| Agent | Skills parent |
+|---|---|
+| Codex and OpenCode | `$HOME/.agents/skills` |
+| Claude Code and OpenCode | `$HOME/.claude/skills` |
+| OpenCode-native | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills` |
+
+For example, `gh autoaccount skill install --dir "$HOME/.agents/skills"` selects
+the user-scoped shared location. The command creates `gh-autoaccount/SKILL.md`
+under the chosen parent and creates missing parents on supported platforms. An
+identical regular file is a no-op; customized or non-regular destinations and symlinks at the managed child
+or final file are refused. The selected parent and its ancestors may be symlinks.
+There is no default destination or force overwrite. Review the destination before
+installation; your agent may need to refresh its skill list to discover it. See
+the [Codex](https://developers.openai.com/codex/skills),
+[Claude Code](https://code.claude.com/docs/en/skills), and
+[OpenCode](https://opencode.ai/v2/docs/skills/) skill documentation.
 
 ## Compatibility and safe migration
 
@@ -786,8 +789,7 @@ the child environment and forwards the exit code.
 ## Development and feedback
 
 Development requires Go 1.26 or newer. The Go module is
-`github.com/mdiloreto/gh-autoaccount`. Use an explicit build output so the tracked
-root launcher is not overwritten:
+`github.com/mdiloreto/gh-autoaccount`:
 
 ```bash
 git clone https://github.com/mdiloreto/gh-autoaccount
