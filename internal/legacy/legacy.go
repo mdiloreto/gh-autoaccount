@@ -50,23 +50,32 @@ func ShellHookPath() (string, error) {
 	return filepath.Join(dir, "hook.sh"), nil
 }
 
-// RCFiles are the shell startup files setup could write the hook source block into.
+// RCFiles are the shell startup files that may source the hook: setup wrote its
+// block into some of them, and users were told to add the line by hand when it
+// could not.
 func RCFiles() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, name := range []string{".zshrc", ".bashrc", ".bash_profile", ".profile"} {
+	for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"} {
 		files = append(files, filepath.Join(home, name))
 	}
 	return files, nil
 }
 
-// HasHookSource reports whether an RC file still sources the hook.
+// HasHookSource reports whether an RC file still has the managed hook block.
 func HasHookSource(path string) bool {
 	data, err := os.ReadFile(path)
 	return err == nil && bytes.Contains(data, []byte(hookStart))
+}
+
+// ReferencesHook reports whether a startup file mentions the hook file at all,
+// inside the managed block or in a line the user added by hand.
+func ReferencesHook(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && bytes.Contains(data, []byte("gh-autoprofile/hook.sh"))
 }
 
 // RemoveHookSource deletes the managed hook-source block from an RC file and
@@ -125,10 +134,17 @@ func removeOwned(locate func() (string, error), header string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !info.Mode().IsRegular() || !bytes.Contains(data, []byte(header)) {
+	if !info.Mode().IsRegular() || !hasHeader(data, header) {
 		return false, fmt.Errorf("not removing %s: it is not a file this tool installed", path)
 	}
 	return true, os.Remove(path)
+}
+
+// hasHeader matches the generated layout, a shebang followed by the header
+// line, so a user file that merely quotes the header is not taken for ours.
+func hasHeader(data []byte, header string) bool {
+	lines := bytes.SplitN(data, []byte("\n"), 3)
+	return len(lines) >= 2 && bytes.HasPrefix(lines[0], []byte("#!")) && bytes.HasPrefix(lines[1], []byte(header))
 }
 
 // HasManagedEnvrc reports whether dir's .envrc still has a managed block or a

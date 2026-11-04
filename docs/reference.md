@@ -151,8 +151,8 @@ registry/settings or an inaccessible directory can fail the command.
 | `authentication` | `selected`, `source`, `credential_available`, `verified` (always `false`), optional `error`. Availability does not establish validity, login, permissions or SSO. |
 | `git` | Optional `git_dir`, `author_ident`, `committer_ident`, `error`: actual Git results in the target directory under the current config and environment, without pin identity injection. |
 
-Authentication sources include `keyring`, `token_command`, the four supported token
-variable names, `default` and `unavailable`. Errors carry `code` and `message`
+Authentication sources are `keyring`, `token_command`, `default` and `unavailable`;
+inherited token variables never stand in for a selected account. Errors carry `code` and `message`
 (for example `credential_unavailable`, `repository_unavailable`,
 `identity_unavailable`, with partial results). `list --json` emits `pins` with the
 same pin objects, or `[]`.

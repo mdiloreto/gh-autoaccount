@@ -523,17 +523,19 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 			cleaned++
 		}
 	}
-	hookSourced := false
-	if rcFiles, err := legacy.RCFiles(); err == nil && !externalShell {
+	var sourcedBy []string
+	if rcFiles, err := legacy.RCFiles(); err == nil {
 		for _, rc := range rcFiles {
-			if !legacy.HasHookSource(rc) {
-				continue
+			if !externalShell && legacy.HasHookSource(rc) {
+				if _, err := legacy.RemoveHookSource(rc); err != nil {
+					review = append(review, fmt.Sprintf("%s: %v", rc, err))
+				} else {
+					cleaned++
+				}
 			}
-			if _, err := legacy.RemoveHookSource(rc); err != nil {
-				review = append(review, fmt.Sprintf("%s: %v", rc, err))
-				hookSourced = true
-			} else {
-				cleaned++
+			// A line outside the managed block still sources the hook.
+			if legacy.ReferencesHook(rc) {
+				sourcedBy = append(sourcedBy, rc)
 			}
 		}
 	}
@@ -545,7 +547,7 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 	hookPath, _ := legacy.ShellHookPath()
 	keptHook := ""
 	if _, err := os.Lstat(hookPath); err == nil {
-		if externalShell || hookSourced {
+		if externalShell || len(sourcedBy) > 0 {
 			// Deleting a file a shell still sources would break shell startup.
 			keptHook = hookPath
 		} else if removed, err := legacy.RemoveHook(); err != nil {
@@ -571,6 +573,9 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 	}
 	if keptHook != "" {
 		fmt.Printf("    Remove the line that sources %s from your shell config, then delete that file.\n", keptHook)
+		if len(sourcedBy) > 0 {
+			fmt.Printf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
+		}
 	}
 	return len(review) == 0 && keptHook == ""
 }

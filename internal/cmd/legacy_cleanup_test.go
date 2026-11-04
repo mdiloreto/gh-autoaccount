@@ -179,6 +179,41 @@ func TestSetupRemovesWhatTheDirenvModesLeft(t *testing.T) {
 	}
 }
 
+// Older setup told users to add the source line by hand when it could not edit
+// the RC file; such a line has no managed markers.
+func TestSetupKeepsHookSourcedOutsideManagedBlock(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	b := seedBetaHome(t, false)
+	zshenv := filepath.Join(b.home, ".zshenv")
+	manual := "source \"" + b.hook + "\"\n"
+	if err := os.WriteFile(zshenv, []byte(manual), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_DIRENV_LOG", filepath.Join(b.home, "direnv-calls"))
+	if err := os.WriteFile(filepath.Join(b.home, "bin", "direnv"), []byte("#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> \"$TEST_DIRENV_LOG\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureOnboarding(t, NewSetupCmd().Execute)
+
+	if gone(t, b.hook) {
+		t.Fatal("hook deleted while .zshenv still sources it")
+	}
+	if got := readFile(t, zshenv); got != manual {
+		t.Fatalf("unmanaged startup file edited: %q", got)
+	}
+	if got := readFile(t, b.rc); got != rcBefore+rcAfter {
+		t.Fatalf("managed RC block not removed: %q", got)
+	}
+	for _, want := range []string{"Remove the line that sources " + b.hook, "It is referenced from: " + zshenv} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestSetupExternalShellKeepsHookAndRC(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")

@@ -178,12 +178,15 @@ func TestRemoveLibraryAndHookRequireOurHeader(t *testing.T) {
 				t.Fatalf("absent file: removed=%v err=%v", removed, err)
 			}
 
-			write(t, tc.path, "#!/bin/sh\n# someone else's file\n", 0644)
-			if removed, err := tc.remove(); err == nil || removed {
-				t.Fatalf("removed a file without our header: removed=%v err=%v", removed, err)
-			}
-			if got := read(t, tc.path); got != "#!/bin/sh\n# someone else's file\n" {
-				t.Fatalf("foreign file changed: %q", got)
+			// A user file that only quotes our header further down is not ours.
+			for _, foreign := range []string{"#!/bin/sh\n# someone else's file\n", "#!/bin/sh\n# my own copy\n# based on " + tc.header + "\n"} {
+				write(t, tc.path, foreign, 0644)
+				if removed, err := tc.remove(); err == nil || removed {
+					t.Fatalf("removed a file without our header: removed=%v err=%v", removed, err)
+				}
+				if got := read(t, tc.path); got != foreign {
+					t.Fatalf("foreign file changed: %q", got)
+				}
 			}
 
 			if err := os.Remove(tc.path); err != nil {

@@ -235,7 +235,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	leftovers = append(leftovers, legacy.LeftoverFiles()...)
 	if rcFiles, err := legacy.RCFiles(); err == nil {
 		for _, rc := range rcFiles {
-			if legacy.HasHookSource(rc) {
+			if legacy.ReferencesHook(rc) {
 				leftovers = append(leftovers, rc+" sources the retired hook")
 			}
 		}
