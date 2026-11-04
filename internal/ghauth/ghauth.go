@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -394,9 +395,11 @@ func ResolveGHPath() (string, error) {
 		return path, nil
 	}
 
-	shimPath := ""
-	if path, err := shims.GHPath(); err == nil {
-		shimPath = path
+	var shimPaths []string
+	for _, locate := range []func() (string, error){shims.GHPath, shims.MiseGHPath} {
+		if path, err := locate(); err == nil {
+			shimPaths = append(shimPaths, path)
+		}
 	}
 
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
@@ -404,7 +407,7 @@ func ResolveGHPath() (string, error) {
 			continue
 		}
 		candidate := filepath.Join(dir, "gh")
-		if shimPath != "" && candidate == shimPath {
+		if slices.Contains(shimPaths, candidate) {
 			continue
 		}
 		if !validGH(candidate) {
