@@ -123,6 +123,7 @@ func TestShortAliasRealGH(t *testing.T) {
 		}
 		return
 	}
+	aliasTimeout = time.Minute
 	dir := t.TempDir()
 	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"} {
 		t.Setenv(key, "")
