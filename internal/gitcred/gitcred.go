@@ -88,6 +88,29 @@ func Target() (string, error) {
 	return strings.ReplaceAll(string(match[1]), `'\''`, "'"), nil
 }
 
+var helperRealGHPattern = regexp.MustCompile(`GH_AUTOPROFILE_REAL_GH='((?:[^']|'\\'')*)' exec `)
+
+// RealGH returns the real gh path the managed helper pins, or "" when the
+// helper predates pinning and resolves gh at runtime.
+func RealGH() (string, error) {
+	helperPath, err := HelperPath()
+	if err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(helperPath)
+	if err != nil {
+		return "", err
+	}
+	if !managedHelperPattern.Match(content) {
+		return "", fmt.Errorf("git credential helper is not managed")
+	}
+	match := helperRealGHPattern.FindSubmatch(content)
+	if match == nil {
+		return "", nil
+	}
+	return strings.ReplaceAll(string(match[1]), `'\''`, "'"), nil
+}
+
 // IsInstalled reports whether the helper script exists.
 func IsInstalled() bool {
 	path, err := HelperPath()

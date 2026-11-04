@@ -381,17 +381,10 @@ func GetGHVersion() (string, error) {
 
 // ResolveGHPath returns the real gh binary path, bypassing gh-autoprofile shims.
 func ResolveGHPath() (string, error) {
-	if path := os.Getenv("GH_PATH"); path != "" {
-		if !filepath.IsAbs(path) || !validGH(path) {
-			return "", fmt.Errorf("GH_PATH must be an absolute executable path to a real gh (not a shim or this executable)")
+	for _, key := range []string{"GH_PATH", "GH_AUTOPROFILE_REAL_GH"} {
+		if path := os.Getenv(key); path != "" {
+			return configuredGH(key, path)
 		}
-		return path, nil
-	}
-	if path := os.Getenv("GH_AUTOPROFILE_REAL_GH"); path != "" {
-		if !filepath.IsAbs(path) || !validGH(path) {
-			return "", fmt.Errorf("GH_AUTOPROFILE_REAL_GH must be an absolute executable path to a real gh (not a shim or this executable)")
-		}
-		return path, nil
 	}
 
 	shimPath := ""
@@ -414,6 +407,21 @@ func ResolveGHPath() (string, error) {
 	}
 
 	return "", fmt.Errorf("gh CLI not found in PATH (or only the gh-autoaccount shim was found)")
+}
+
+// configuredGH validates an explicitly configured real gh. A missing path is
+// reported separately: generated helpers pin it, and version managers remove
+// it when that gh version is uninstalled.
+func configuredGH(key, path string) (string, error) {
+	if filepath.IsAbs(path) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return "", fmt.Errorf("%s %s no longer exists (was gh upgraded or uninstalled?); refresh with: gh autoaccount setup --migrate", key, path)
+		}
+	}
+	if !filepath.IsAbs(path) || !validGH(path) {
+		return "", fmt.Errorf("%s must be an absolute executable path to a real gh (not a shim or this executable)", key)
+	}
+	return path, nil
 }
 
 func validGH(path string) bool {

@@ -107,6 +107,21 @@ func TestCredentialHelperOwnerPinWinsOverCwdSelection(t *testing.T) {
 	}
 }
 
+func TestCredentialHelperNamesMissingRecordedGH(t *testing.T) {
+	_, pinned := credentialFixture(t, "pins:\n  - user: carol\n    dir: \"{{work}}\"\n")
+	missing := filepath.Join(t.TempDir(), "installs", "gh", "2.100.0", "bin", "gh")
+	t.Setenv("GH_PATH", missing)
+	t.Setenv("GH_AUTOPROFILE_REAL_GH", missing)
+	t.Chdir(pinned)
+	out, err := runCredentialGet(t, "protocol=https\nhost=github.com\n\n")
+	if out != "quit=true\n\n" {
+		t.Fatalf("output = %q, want quit", out)
+	}
+	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "gh autoaccount setup --migrate") {
+		t.Fatalf("error does not name the missing gh and the fix: %v", err)
+	}
+}
+
 func TestCredentialHelperSelection(t *testing.T) {
 	const pins = `pins:
   - user: bob

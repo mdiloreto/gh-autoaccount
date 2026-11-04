@@ -101,6 +101,40 @@ func TestDoctorEnterpriseHostHelperCoverage(t *testing.T) {
 	}
 }
 
+// Version managers such as mise put gh in a version-specific directory, which
+// disappears when that version is uninstalled after an upgrade.
+func TestDoctorReportsAndMigrationRepairsMissingHelperRealGH(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	home := onboardingHome(t)
+	command := NewSetupCmd()
+	command.SetArgs([]string{"--native", "--no-shell-rc"})
+	captureOnboarding(t, command.Execute)
+	target, err := gitcred.Target()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := filepath.Join(home, "mise", "installs", "gh", "2.100.0", "bin", "gh")
+	if _, err := gitcred.Install(target, removed); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOnboarding(t, NewDoctorCmd().Execute)
+	if !strings.Contains(out, "WARN git credential helper gh is missing or not executable: "+removed) {
+		t.Fatal(out)
+	}
+	doctor := NewDoctorCmd()
+	doctor.SetArgs([]string{"--fix"})
+	captureOnboarding(t, doctor.Execute)
+	if got, err := gitcred.RealGH(); err != nil || got != filepath.Join(home, "bin", "gh") {
+		t.Fatalf("helper gh = %q, %v; want %q", got, err, filepath.Join(home, "bin", "gh"))
+	}
+	out = captureOnboarding(t, NewDoctorCmd().Execute)
+	if !strings.Contains(out, "OK   git credential helper gh: "+filepath.Join(home, "bin", "gh")) {
+		t.Fatal(out)
+	}
+}
+
 // Beta.1 installs pointed the proxy and helper into a cache directory that
 // disappears when gh replaces the extension with a binary install.
 func TestDoctorReportsAndMigrationRepairsVanishedExtensionTarget(t *testing.T) {
