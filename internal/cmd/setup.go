@@ -556,11 +556,12 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 			cleaned++
 		}
 	}
-	if cleaned == 0 && len(review) == 0 && keptHook == "" {
+	clean := len(review) == 0 && keptHook == ""
+	if cleaned == 0 && clean {
 		return true
 	}
 	fmt.Print("  Removing legacy files....... ")
-	if len(review) == 0 && keptHook == "" {
+	if clean {
 		fmt.Println("OK")
 	} else {
 		fmt.Println("REVIEW")
@@ -577,7 +578,7 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 			fmt.Printf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
 		}
 	}
-	return len(review) == 0 && keptHook == ""
+	return clean
 }
 
 // loginProfile returns the login-shell startup file for an interactive RC
