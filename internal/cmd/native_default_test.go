@@ -133,6 +133,7 @@ func TestSetupWritesPathBlockToLoginProfile(t *testing.T) {
 	}{
 		{name: "bash without profiles", shell: "/bin/bash", want: []string{".bashrc", ".profile"}},
 		{name: "bash with bash_profile", shell: "/bin/bash", seed: map[string]string{".bash_profile": "# mine\n"}, want: []string{".bashrc", ".bash_profile"}, absent: []string{".profile"}},
+		{name: "bash skips a dangling bash_profile", shell: "/bin/bash", seed: map[string]string{".bash_profile": "dangling", ".profile": "# mine\n"}, want: []string{".bashrc", ".profile"}},
 		{name: "zsh", shell: "/bin/zsh", want: []string{".zshrc", ".zprofile"}},
 		{name: "existing rc block gains profile on migrate", shell: "/bin/bash", args: []string{"--native", "--migrate"},
 			seed: map[string]string{".bashrc": "# gh-autoprofile-shims:start\nexport PATH='/old':\"$PATH\"\n# gh-autoprofile-shims:end\n"},
@@ -142,6 +143,12 @@ func TestSetupWritesPathBlockToLoginProfile(t *testing.T) {
 			home := onboardingHome(t)
 			t.Setenv("SHELL", tc.shell)
 			for name, content := range tc.seed {
+				if content == "dangling" {
+					if err := os.Symlink(filepath.Join(home, "missing"), filepath.Join(home, name)); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
 				if err := os.WriteFile(filepath.Join(home, name), []byte(content), 0600); err != nil {
 					t.Fatal(err)
 				}

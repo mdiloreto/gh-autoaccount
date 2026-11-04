@@ -891,7 +891,8 @@ func runMigration() (migrationReport, error) {
 
 // loginProfile returns the login-shell startup file for an interactive RC
 // file. Login shells (bash -l, zsh -l, macOS terminals, many agent tools) skip
-// the interactive RC file. Bash reads the first of these that exists.
+// the interactive RC file. Bash reads the first of these that exists, so a
+// dangling symlink does not count.
 func loginProfile(rcPath string) string {
 	dir := filepath.Dir(rcPath)
 	switch filepath.Base(rcPath) {
@@ -899,7 +900,7 @@ func loginProfile(rcPath string) string {
 		return filepath.Join(dir, ".zprofile")
 	case ".bashrc":
 		for _, name := range []string{".bash_profile", ".bash_login", ".profile"} {
-			if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 				return filepath.Join(dir, name)
 			}
 		}
