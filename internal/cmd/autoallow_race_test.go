@@ -40,7 +40,7 @@ exec "$REAL_DIRENV" "$@"
 				t.Fatal(err)
 			}
 			setup := NewSetupCmd()
-			setup.SetArgs([]string{"--no-shell-rc"})
+			setup.SetArgs([]string{"--no-shell-rc", "--native=false"})
 			captureOnboarding(t, setup.Execute)
 			if surface == "pin" {
 				pin := NewPinCmd()

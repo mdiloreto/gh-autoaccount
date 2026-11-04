@@ -54,6 +54,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		if err := setupCmd.Flags().Set("migrate", "true"); err != nil {
 			return err
 		}
+		setupCmd.SetErr(cmd.ErrOrStderr())
 		return runSetup(setupCmd, args)
 	}
 
@@ -61,7 +62,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load setup settings: %w", err)
 	}
-	issues := 0
+	issues, legacyIssues := 0, 0
 	fmt.Println("gh-autoaccount doctor")
 	fmt.Println("=====================")
 	if settings.Native {
@@ -69,6 +70,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("INFO direnv is optional for native routing; export workflows require it")
 	} else {
 		fmt.Println("INFO routing mode: legacy (shell wrappers and optional shim)")
+		fmt.Println("WARN " + legacyDeprecation)
+		issues++
+		legacyIssues = 1
 	}
 
 	libPath, libPathErr := direnvlib.ShellLibPath()
@@ -296,6 +300,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Println("\nRun `gh autoaccount setup --migrate` to fix detected issues.")
+	// The legacy warning names its own fix; setup --migrate preserves the mode.
+	if issues > legacyIssues {
+		fmt.Println("\nRun `gh autoaccount setup --migrate` to fix detected issues.")
+	}
 	return nil
 }

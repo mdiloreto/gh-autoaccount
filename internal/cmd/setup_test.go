@@ -674,7 +674,7 @@ func TestExternalShellSetupMigration(t *testing.T) {
 				}
 			}
 			pathBefore := os.Getenv("PATH")
-			for _, flags := range [][]string{{"--no-shell-rc", "--gh-shim"}, {"--migrate"}, {}} {
+			for _, flags := range [][]string{{"--no-shell-rc", "--gh-shim", "--native=false"}, {"--migrate"}, {}} {
 				cmd := NewSetupCmd()
 				cmd.SetArgs(flags)
 				out := captureOnboarding(t, cmd.Execute)
@@ -1019,7 +1019,7 @@ func TestLockedGlobalPinUnpinAndMigrationAreRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
 	captureOnboarding(t, setup.Execute)
 	captureOnboarding(t, func() error { return runPin("alice", repo, "original@example.test", "Original", "", false) })
 	pinsPath, _ := config.PinsFilePath()
@@ -1144,7 +1144,7 @@ func TestOnboardingMutationLock(t *testing.T) {
 func TestUnpinCleanupFailureRetainsPin(t *testing.T) {
 	home := onboardingHome(t)
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
 	captureOnboarding(t, setup.Execute)
 	captureOnboarding(t, func() error { return runPin("alice", home, "alice@example.test", "Alice", "", false) })
 	path, _ := config.PinsFilePath()
@@ -1177,7 +1177,7 @@ func TestUnpinMissingResources(t *testing.T) {
 				t.Fatal(err)
 			}
 			setup := NewSetupCmd()
-			setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
+			setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
 			captureOnboarding(t, setup.Execute)
 			captureOnboarding(t, func() error { return runPin("alice", repo, "alice@example.test", "Alice", "", false) })
 			if err := os.Remove(filepath.Join(repo, ".envrc")); err != nil {
@@ -1216,7 +1216,7 @@ func TestPinEnvrcWriteFailureRestoresIdentity(t *testing.T) {
 		t.Fatalf("git init: %s %v", out, err)
 	}
 	setup := NewSetupCmd()
-	setup.SetArgs([]string{"--no-shell-rc", "--git-identity"})
+	setup.SetArgs([]string{"--no-shell-rc", "--git-identity", "--native=false"})
 	captureOnboarding(t, setup.Execute)
 	captureOnboarding(t, func() error { return runPin("alice", repo, "original@example.test", "Original", "", false) })
 	pinsPath, _ := config.PinsFilePath()

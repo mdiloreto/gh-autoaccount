@@ -1647,3 +1647,52 @@ func TestShellHook_RegistersWithPromptCycle(t *testing.T) {
 		}
 	})
 }
+
+func TestShellLibDeprecationNotices(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, tc := range []struct{ fn, mode, want string }{
+		{"use_gh_autoprofile", "wrapper", "gh autoaccount setup --native"},
+		{"use_gh_autoprofile_export", "export", "gh autoaccount exec"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("DIRENV_CONFIG", filepath.Join(root, "direnv"))
+			extension := filepath.Join(root, "extension")
+			fixture := `#!/bin/sh
+while [ "$1" != -- ]; do shift; done
+shift
+export GH_AUTOPROFILE_USER=alice GH_AUTOPROFILE_HOST=github.com GH_AUTOPROFILE_MODE="$FIXTURE_MODE" GH_TOKEN=trusted
+exec "$@"
+`
+			if err := os.WriteFile(extension, []byte(fixture), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := InstallShellLib(extension, "/bin/sh"); err != nil {
+				t.Fatal(err)
+			}
+			lib, _ := ShellLibPath()
+			script := `log_error() { printf 'ERROR:%s\n' "$*"; }; log_status() { printf 'STATUS:%s\n' "$*"; }; source "$LIB"; ` + tc.fn + ` alice`
+			cmd := exec.Command(bash, "-c", script)
+			cmd.Env = append(os.Environ(), "LIB="+lib, "FIXTURE_MODE="+tc.mode)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("activation failed: %v: %s", err, out)
+			}
+			var deprecations []string
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, "deprecated") {
+					deprecations = append(deprecations, line)
+				}
+			}
+			if len(deprecations) != 1 || !strings.Contains(deprecations[0], tc.want) {
+				t.Fatalf("want one deprecation line mentioning %q, got %q\n%s", tc.want, deprecations, out)
+			}
+			if !strings.Contains(string(out), "activated 'alice' ("+tc.mode+" mode)") {
+				t.Fatalf("activation notice missing: %s", out)
+			}
+		})
+	}
+}

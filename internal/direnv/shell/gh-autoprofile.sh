@@ -5,17 +5,17 @@
 #
 # Provides the use_gh_autoprofile function for .envrc files.
 #
-# Wrapper mode (default):
+# Wrapper mode (deprecated; native routing via `gh autoaccount setup` is the default):
 #   use_gh_autoprofile <user> [git-email] [git-name] [ssh-key-path]
 #   Exports only GH_AUTOPROFILE_USER and GH_AUTOPROFILE_MODE=wrapper.
 #   The shell hook creates gh()/git() functions that inject the token
 #   per-invocation.
 #
-# Export mode (opt-in per pin with --export-token):
+# Export mode (deprecated; opt-in per pin with --export-token):
 #   use_gh_autoprofile_export <user> [git-email] [git-name] [ssh-key-path]
 #   Exports GH_TOKEN and GITHUB_TOKEN directly into the shell environment.
 
-# --- wrapper mode (default) ---------------------------------------------------
+# --- wrapper mode (deprecated) ------------------------------------------------
 
 use_gh_autoprofile() {
   local user="$1"
@@ -58,6 +58,7 @@ use_gh_autoprofile() {
     return 1
   fi
 
+  log_status "gh-autoaccount" "deprecated: wrapper mode does not cover non-interactive shells; run 'gh autoaccount setup --native'"
   log_status "gh-autoaccount" "activated '$user' (wrapper mode)"
 }
 
@@ -105,6 +106,7 @@ use_gh_autoprofile_export() {
     return 1
   fi
 
+  log_status "gh-autoaccount" "deprecated: export mode leaves a token in the environment; use 'gh autoaccount exec -- <command>'"
   log_status "gh-autoaccount" "activated '$user' (export mode)"
 }
 
