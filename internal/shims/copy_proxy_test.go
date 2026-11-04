@@ -1,6 +1,7 @@
 package shims
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,5 +84,44 @@ func TestWindowsCopyProxyRefusesForeignFile(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(path); string(got) != "someone's gh" {
 		t.Fatalf("foreign file changed: %q", got)
+	}
+}
+
+func TestWindowsCopyProxyKeepsUserFilesAndClearsSetAside(t *testing.T) {
+	_, ext := useCopyProxy(t)
+	path, err := InstallNativeGH(ext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+	// A user's own backup next to the proxy is not ours to delete.
+	userBackup := path + ".old"
+	if err := os.WriteFile(userBackup, []byte("mine"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A set-aside copy from an earlier refresh, no longer running.
+	leftover := filepath.Join(dir, setAsidePrefix+"123")
+	if err := os.WriteFile(leftover, []byte("extension v0"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := os.WriteFile(ext, []byte(fmt.Sprintf("extension v%d", i+2)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InstallNativeGH(ext); err != nil {
+			t.Fatalf("refresh %d: %v", i, err)
+		}
+	}
+	if got, err := os.ReadFile(userBackup); err != nil || string(got) != "mine" {
+		t.Fatalf("user backup changed: %q %v", got, err)
+	}
+	if _, err := os.Lstat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("earlier set-aside copy kept: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if name := entry.Name(); name != filepath.Base(path) && name != filepath.Base(userBackup) {
+			t.Fatalf("unexpected file left in the shim directory: %s", name)
+		}
 	}
 }

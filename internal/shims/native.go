@@ -414,16 +414,20 @@ func installNativeLink(path, extensionBinaryPath string) (string, error) {
 	return path, nil
 }
 
-// placeCopy replaces path with a copy of source. Windows refuses to overwrite a
-// running executable but allows renaming it, so an existing proxy is moved
-// aside first; a copy still running is removed by a later install.
+// placeCopy replaces path with a copy of source. Windows refuses to overwrite or
+// delete a running executable but allows renaming it, so an existing proxy is
+// moved aside under a unique name first. Set-aside copies that are no longer
+// running are removed on a later install; only names this function creates are
+// ever removed.
 func placeCopy(path, source string) error {
+	dir := filepath.Dir(path)
+	removeSetAsideCopies(dir)
 	in, err := os.Open(source)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gh-autoprofile-*"+filepath.Ext(path))
+	tmp, err := os.CreateTemp(dir, ".gh-autoprofile-*"+filepath.Ext(path))
 	if err != nil {
 		return err
 	}
@@ -438,16 +442,53 @@ func placeCopy(path, source string) error {
 	if err := os.Chmod(tmp.Name(), 0755); err != nil {
 		return err
 	}
-	aside := path + ".old"
-	_ = os.Remove(aside)
+	aside := ""
 	if _, err := os.Lstat(path); err == nil {
+		if aside, err = setAsideName(dir); err != nil {
+			return err
+		}
 		if err := os.Rename(path, aside); err != nil {
 			return err
 		}
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return errors.Join(err, os.Rename(aside, path))
+		if aside != "" {
+			err = errors.Join(err, os.Rename(aside, path))
+		}
+		return err
 	}
-	_ = os.Remove(aside)
+	if aside != "" {
+		_ = os.Remove(aside)
+	}
 	return nil
+}
+
+const setAsidePrefix = ".gh-autoprofile-old-"
+
+// setAsideName reserves an unused name for a proxy moved out of the way.
+func setAsideName(dir string) (string, error) {
+	f, err := os.CreateTemp(dir, setAsidePrefix+"*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	// Rename onto a just-created empty file replaces it on every platform.
+	return name, nil
+}
+
+// removeSetAsideCopies deletes earlier set-aside proxies and temporary copies
+// left by an interrupted install; a copy still running stays until a later one.
+func removeSetAsideCopies(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), ".gh-autoprofile-") {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }

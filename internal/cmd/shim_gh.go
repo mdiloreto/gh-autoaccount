@@ -79,21 +79,14 @@ func managementExtensionPath() (string, error) {
 	return target, nil
 }
 
-// ghDataDir mirrors gh's own data directory lookup, which is where gh
-// installs extensions.
+// ghDataDir mirrors gh's own data directory lookup (go-gh config.DataDir),
+// which is where gh installs extensions.
 func ghDataDir() (string, error) {
-	for _, key := range []string{"GH_DATA_DIR", "XDG_DATA_HOME"} {
-		dir := os.Getenv(key)
-		if dir == "" {
-			continue
-		}
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
 		if !filepath.IsAbs(dir) {
-			return "", fmt.Errorf("%s must be an absolute path", key)
+			return "", fmt.Errorf("XDG_DATA_HOME must be an absolute path")
 		}
-		if key == "XDG_DATA_HOME" {
-			dir = filepath.Join(dir, "gh")
-		}
-		return dir, nil
+		return filepath.Join(dir, "gh"), nil
 	}
 	if local := os.Getenv("LOCALAPPDATA"); runtime.GOOS == "windows" && local != "" {
 		if !filepath.IsAbs(local) {

@@ -32,23 +32,45 @@ func readPathValue(root registry.Key, key string) (value string, valueType uint3
 	return value, valueType, err == nil, err
 }
 
+// pathEntries splits a Path value into its raw entries. A semicolon inside
+// double quotes belongs to the entry, as Windows treats it. Entries keep their
+// exact text so rewriting the value never changes the ones it leaves alone.
 func pathEntries(value string) []string {
 	var entries []string
-	for _, entry := range strings.Split(value, ";") {
-		if entry = strings.TrimSpace(entry); entry != "" {
-			entries = append(entries, entry)
+	start, quoted := 0, false
+	for i, r := range value {
+		switch {
+		case r == '"':
+			quoted = !quoted
+		case r == ';' && !quoted:
+			entries = append(entries, value[start:i])
+			start = i + 1
 		}
 	}
-	return entries
+	entries = append(entries, value[start:])
+	var kept []string
+	for _, entry := range entries {
+		if strings.TrimSpace(entry) != "" {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
-// samePathEntry compares a PATH entry, which may hold %VARIABLES%, with a
-// directory, the way Windows does: case-insensitively.
-func samePathEntry(entry, dir string) bool {
+// entryDir returns the directory a raw Path entry names: quotes removed and
+// %VARIABLES% expanded.
+func entryDir(entry string) string {
+	entry = strings.ReplaceAll(strings.TrimSpace(entry), `"`, "")
 	if expanded, err := registry.ExpandString(entry); err == nil {
 		entry = expanded
 	}
-	return strings.EqualFold(filepath.Clean(entry), filepath.Clean(dir))
+	return entry
+}
+
+// samePathEntry compares a Path entry with a directory the way Windows does:
+// case-insensitively, after expansion.
+func samePathEntry(entry, dir string) bool {
+	return strings.EqualFold(filepath.Clean(entryDir(entry)), filepath.Clean(dir))
 }
 
 func userPathHas(dir string) bool {
@@ -142,10 +164,7 @@ func NewProcessGH() (string, error) {
 		return "", errors.Join(machineErr, userErr)
 	}
 	for _, entry := range append(pathEntries(machine), pathEntries(user)...) {
-		if expanded, err := registry.ExpandString(entry); err == nil {
-			entry = expanded
-		}
-		candidate := filepath.Join(entry, "gh.exe")
+		candidate := filepath.Join(entryDir(entry), "gh.exe")
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
 			return candidate, nil
 		}

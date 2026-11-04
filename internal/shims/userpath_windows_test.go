@@ -55,3 +55,14 @@ func TestWindowsUserPathPrependAndRestore(t *testing.T) {
 		t.Fatalf("restore left %q, want %q", after, before)
 	}
 }
+
+func TestWindowsPathEntriesKeepQuotedSemicolons(t *testing.T) {
+	got := pathEntries(`"C:\SDK; tools\bin";C:\a;;%SystemRoot%\x; `)
+	want := []string{`"C:\SDK; tools\bin"`, `C:\a`, `%SystemRoot%\x`}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("pathEntries = %q, want %q", got, want)
+	}
+	if !samePathEntry(`"C:\Program Files\GitHub CLI"`, `c:\program files\github cli\`) {
+		t.Fatal("a quoted entry must match its directory")
+	}
+}
