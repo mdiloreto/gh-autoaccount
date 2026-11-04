@@ -487,14 +487,30 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 						fmt.Printf("    Added to: %s\n", rcPath)
 					}
 				}
-				if installShim && !shims.CheckPathBlockInstalled() && !shimDirWinsForGH() {
+				// A user who already puts the shim first without our block manages PATH.
+				if installShim && (shims.CheckPathBlockInstalled() || !shimDirWinsForGH()) {
 					shimDir, err := shims.Dir()
 					if err != nil {
 						fmt.Printf("    Cannot resolve shim dir: %v\n", err)
 						allGood = false
-					} else if err := shims.InjectPath(rcPath, shimDir); err != nil {
-						fmt.Printf("    Cannot configure shim PATH: %v\n", err)
-						allGood = false
+					}
+					for _, target := range []string{rcPath, loginProfile(rcPath)} {
+						if err != nil || target == "" || shims.HasPathBlock(target) {
+							continue
+						}
+						if target != rcPath {
+							snapshot, snapErr := snapshotSetupRC(target)
+							if snapErr != nil {
+								fmt.Printf("    Cannot snapshot %s: %v\n", target, snapErr)
+								allGood = false
+								continue
+							}
+							rollback = append(rollback, snapshot.restore)
+						}
+						if injectErr := shims.InjectPath(target, shimDir); injectErr != nil {
+							fmt.Printf("    Cannot configure shim PATH in %s: %v\n", target, injectErr)
+							allGood = false
+						}
 					}
 				}
 			}
@@ -871,6 +887,25 @@ func runMigration() (migrationReport, error) {
 	}
 
 	return report, nil
+}
+
+// loginProfile returns the login-shell startup file for an interactive RC
+// file. Login shells (bash -l, zsh -l, macOS terminals, many agent tools) skip
+// the interactive RC file. Bash reads the first of these that exists.
+func loginProfile(rcPath string) string {
+	dir := filepath.Dir(rcPath)
+	switch filepath.Base(rcPath) {
+	case ".zshrc":
+		return filepath.Join(dir, ".zprofile")
+	case ".bashrc":
+		for _, name := range []string{".bash_profile", ".bash_login", ".profile"} {
+			if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+				return filepath.Join(dir, name)
+			}
+		}
+		return filepath.Join(dir, ".profile")
+	}
+	return ""
 }
 
 // detectShellRC finds the user's active shell RC file.

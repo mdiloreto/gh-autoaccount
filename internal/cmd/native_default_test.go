@@ -119,6 +119,51 @@ func TestFreshSetupAddsPathBlockWhenShimDirIsShadowed(t *testing.T) {
 	}
 }
 
+// Login shells (bash -l, zsh -l, macOS terminals, many agent tools) skip the
+// interactive RC file, so the PATH block must also reach the login profile.
+func TestSetupWritesPathBlockToLoginProfile(t *testing.T) {
+	requireNativeSupport(t)
+	const block = "gh-autoprofile-shims:start"
+	for _, tc := range []struct {
+		name, shell string
+		seed        map[string]string // files present before setup
+		args        []string
+		want        []string // files that must carry the block
+		absent      []string // files that must not be created
+	}{
+		{name: "bash without profiles", shell: "/bin/bash", want: []string{".bashrc", ".profile"}},
+		{name: "bash with bash_profile", shell: "/bin/bash", seed: map[string]string{".bash_profile": "# mine\n"}, want: []string{".bashrc", ".bash_profile"}, absent: []string{".profile"}},
+		{name: "zsh", shell: "/bin/zsh", want: []string{".zshrc", ".zprofile"}},
+		{name: "existing rc block gains profile on migrate", shell: "/bin/bash", args: []string{"--native", "--migrate"},
+			seed: map[string]string{".bashrc": "# gh-autoprofile-shims:start\nexport PATH='/old':\"$PATH\"\n# gh-autoprofile-shims:end\n"},
+			want: []string{".bashrc", ".profile"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := onboardingHome(t)
+			t.Setenv("SHELL", tc.shell)
+			for name, content := range tc.seed {
+				if err := os.WriteFile(filepath.Join(home, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := NewSetupCmd()
+			command.SetArgs(tc.args)
+			captureOnboarding(t, command.Execute)
+			for _, name := range tc.want {
+				data, err := os.ReadFile(filepath.Join(home, name))
+				if err != nil || strings.Count(string(data), block) != 1 {
+					t.Fatalf("%s lacks exactly one PATH block (%v):\n%s", name, err, data)
+				}
+			}
+			for _, name := range tc.absent {
+				if _, err := os.Stat(filepath.Join(home, name)); !os.IsNotExist(err) {
+					t.Fatalf("%s was created: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
 func TestLegacyNoticeSuppressedWhereNativeUnsupported(t *testing.T) {
 	old := nativeGHSupported
 	nativeGHSupported = func() bool { return false }
