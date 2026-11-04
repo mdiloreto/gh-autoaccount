@@ -32,9 +32,9 @@ installs precompiled extensions from the latest release. Upgrade with
 refresh generated files. Checksums in `checksums.txt` detect corruption of a manual
 download, not publisher identity.
 
-Platforms: Linux and macOS with Bash or zsh. Windows binaries are published, but
-routing is not available on Windows yet
-([#15](https://github.com/mdiloreto/gh-autoaccount/issues/15)).
+Platforms: Linux and macOS with Bash or zsh, and Windows 10/11 with PowerShell, cmd
+or Git Bash. Git routing on Windows needs Git for Windows; see
+[Windows](#windows) for how the shim reaches PATH there.
 
 The previous project name, `gh-autoprofile`, was a different extension. Installing
 this one does not rename or remove it. Verify the replacement before removing a
@@ -93,6 +93,25 @@ all pins. All commands: `gh autoaccount --help`.
   the pin registry for the exact host being accessed and fails closed if the
   selected credential cannot be resolved. Git finds it through your Git config, so
   it works regardless of PATH, including in cron and systemd.
+
+### Windows
+
+Windows symlinks need administrator rights, so the shim is a copy:
+`%LOCALAPPDATA%\gh-autoaccount\bin\gh.exe`. Setup puts that directory first on
+your user `Path` (no administrator needed) and tells running programs to reload the
+environment; open a new terminal afterwards. New PowerShell, cmd and Git Bash
+windows, and everything started from them, then route plain `gh` per pin.
+
+Windows searches the machine `Path` before the user `Path`. If `gh` is installed
+for all users (the MSI installer, or winget without `--scope user`), that copy
+still comes first. Setup and `doctor` say so and print the one PowerShell command
+an administrator runs to put the shim directory first on the machine `Path`. Git
+HTTPS routing does not depend on PATH and works either way.
+
+A copy does not follow `gh extension upgrade` the way a symlink does. Run
+`gh autoaccount setup --migrate` after upgrading, as on other platforms; `doctor`
+warns while the copy is older than the installed extension. mise integration
+(`--mise`) is not available on Windows.
 
 Selection order is: `exec --user`, then the owner pin for the accessed repository,
 then the deepest directory pin, then the default. **An owner pin wins over a
