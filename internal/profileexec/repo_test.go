@@ -33,6 +33,9 @@ func TestParseRepoSpec(t *testing.T) {
 		{spec: "", wantNone: true},
 		{spec: "a/b/c/d", wantNone: true},
 		{spec: "/x", wantNone: true},
+		{spec: "/work-org/x", wantNone: true},
+		{spec: "https:///work-org/x", wantNone: true},
+		{spec: "https://github.com//x", wantNone: true},
 		{spec: "work-org/", wantNone: true},
 		{spec: "https://github.com/work-org", wantNone: true},
 		{spec: "ftp://github.com/work-org/x", wantNone: true},
@@ -67,6 +70,17 @@ func TestRepoFlagForms(t *testing.T) {
 		{[]string{"pr", "list", "-Ra/b"}, "a/b", true},
 		{[]string{"--repo", "https://github.com/a/b"}, "https://github.com/a/b", true},
 		{[]string{"pr", "list", "-R"}, "", true},
+		// A candidate right after another bare flag may be that flag's value.
+		{[]string{"issue", "create", "-t", "-Rwork-org/x", "-b", "body"}, "", false},
+		{[]string{"issue", "create", "--body", "--repo", "work-org/x"}, "", false},
+		{[]string{"issue", "create", "-t", "-R", "work-org/x"}, "", false},
+		{[]string{"issue", "create", "-wR", "work-org/x"}, "", false},
+		{[]string{"issue", "create", "-t", "--repo=work-org/x"}, "work-org/x", true},
+		{[]string{"issue", "create", "-t", "-R=work-org/x"}, "work-org/x", true},
+		{[]string{"issue", "create", "--title=t", "-R", "work-org/x"}, "work-org/x", true},
+		{[]string{"issue", "create", "-t", "title", "-Rwork-org/x"}, "work-org/x", true},
+		{[]string{"issue", "create", "-t", "-Rbad", "--repo", "work-org/x"}, "", false},
+		{[]string{"-R", "a/b", "-t", "-Rc/d"}, "a/b", true},
 		{[]string{"pr", "list", "--", "-R", "a/b"}, "", false},
 		{[]string{"pr", "list", "--state", "open"}, "", false},
 		{[]string{"api", "--method", "GET"}, "", false},
@@ -159,6 +173,10 @@ func TestRemoteRepoSelection(t *testing.T) {
 		{"origin ssh url", [][2]string{{"origin", "ssh://git@github.com/work-org/x.git"}}, nil, "github.com/work-org"},
 		{"enterprise host", [][2]string{{"origin", "git@ghe.example.test:work-org/x.git"}}, nil, "ghe.example.test/work-org"},
 		{"origin beats others", [][2]string{{"fork", "https://github.com/me/x"}, {"origin", "https://github.com/work-org/x"}}, nil, "github.com/work-org"},
+		{"upstream beats origin", [][2]string{{"origin", "https://github.com/Work-Org/r"}, {"upstream", "https://github.com/someone/r"}}, nil, "github.com/someone"},
+		{"github beats origin", [][2]string{{"origin", "https://github.com/me/r"}, {"github", "https://github.com/work-org/r"}}, nil, "github.com/work-org"},
+		{"upstream beats github", [][2]string{{"github", "https://github.com/me/r"}, {"upstream", "https://github.com/work-org/r"}}, nil, "github.com/work-org"},
+		{"gh-resolved beats upstream", [][2]string{{"upstream", "https://github.com/me/r"}, {"fork", "https://github.com/work-org/r"}}, map[string]string{"fork": "base"}, "github.com/work-org"},
 		{"only remote", [][2]string{{"upstream", "https://github.com/work-org/x"}}, nil, "github.com/work-org"},
 		{"ambiguous without origin", [][2]string{{"a", "https://github.com/one/x"}, {"b", "https://github.com/two/x"}}, nil, ""},
 		{"gh-resolved base beats origin", [][2]string{{"origin", "https://github.com/me/x"}, {"upstream", "https://github.com/work-org/x"}}, map[string]string{"upstream": "base"}, "github.com/work-org"},
@@ -169,7 +187,7 @@ func TestRemoteRepoSelection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := newRepo(t, filepath.Join(root, strings.ReplaceAll(tc.name, " ", "-")), tc.remotes, tc.resolved)
-			got, ok := remoteRepo(repo)
+			got, ok := (&remoteCache{dir: repo}).selected()
 			if tc.want == "" {
 				if ok {
 					t.Fatalf("got %+v, want none", got)
@@ -181,7 +199,7 @@ func TestRemoteRepoSelection(t *testing.T) {
 			}
 		})
 	}
-	if _, ok := remoteRepo(root); ok {
+	if _, ok := (&remoteCache{dir: root}).selected(); ok {
 		t.Fatal("non-repository produced a remote")
 	}
 }
@@ -197,17 +215,20 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		want  string
 	}{
 		{"flag beats everything", RepoQuery{GH: true, Args: append([]string{"-R", "flag-org/x"}, args...)}, "env-org/x", "flag-org"},
-		{"GH_REPO beats clone and remote", RepoQuery{GH: true, Args: args}, "env-org/x", "env-org"},
+		{"GH_REPO beats remote", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "env-org/x", "env-org"},
+		{"clone ignores GH_REPO", RepoQuery{GH: true, Args: args}, "env-org/x", "clone-org"},
 		{"clone target beats remote", RepoQuery{GH: true, Args: args}, "", "clone-org"},
+		{"ambiguous flag is skipped for GH_REPO", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "env-org/x", "env-org"},
+		{"ambiguous flag is skipped for remote", RepoQuery{GH: true, Args: []string{"issue", "create", "-t", "-Rflag-org/x"}}, "", "remote-org"},
 		{"remote last", RepoQuery{GH: true, Args: []string{"pr", "list"}}, "", "remote-org"},
 		{"non-gh command ignores flag, env and clone", RepoQuery{Args: append([]string{"-R", "flag-org/x"}, args...)}, "env-org/x", "remote-org"},
-		{"bare clone target has no owner", RepoQuery{GH: true, Args: []string{"repo", "clone", "bare"}}, "", ""},
+		{"bare clone target falls to remote", RepoQuery{GH: true, Args: []string{"repo", "clone", "bare"}}, "env-org/x", "remote-org"},
 		{"unparseable flag does not fall through", RepoQuery{GH: true, Args: []string{"-R", "bare"}}, "", ""},
 		{"unparseable GH_REPO does not fall through", RepoQuery{GH: true}, "bare", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GH_REPO", tc.env)
-			got, ok := detectRepo(&tc.query, repo)
+			got, ok := detectRepo(&tc.query, &remoteCache{dir: repo})
 			if tc.want == "" && ok || tc.want != "" && (!ok || got.Owner != tc.want) {
 				t.Fatalf("got %+v %v, want owner %q", got, ok, tc.want)
 			}
@@ -218,7 +239,7 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 func TestDetectRepoDefaultHostFollowsGHHost(t *testing.T) {
 	root := repoEnv(t)
 	t.Setenv("GH_HOST", "ghe.example.test")
-	got, ok := detectRepo(&RepoQuery{GH: true, Args: []string{"-R", "work-org/x"}}, root)
+	got, ok := detectRepo(&RepoQuery{GH: true, Args: []string{"-R", "work-org/x"}}, &remoteCache{dir: root})
 	if !ok || got.Host != "ghe.example.test" {
 		t.Fatalf("got %+v %v", got, ok)
 	}
@@ -388,5 +409,25 @@ func TestOwnerPinEnvironmentUsesSelectedPin(t *testing.T) {
 		if got := envValue(env, key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestRemotesMappingToSeveralOwnerPinsAreReported(t *testing.T) {
+	root := repoEnv(t)
+	repo := newRepo(t, filepath.Join(root, "repo"), [][2]string{{"origin", "https://github.com/work-org/x"}, {"upstream", "git@github.com:Other-Org/x.git"}, {"fork", "https://github.com/me/x"}}, nil)
+	selectionFixture(t, root, []config.Pin{
+		{User: "bob", Owner: "work-org", Mode: config.ModeWrapper},
+		{User: "carol", Owner: "other-org", Mode: config.ModeWrapper},
+	})
+	ctx, err := ResolveContextWithPolicy(repo, Policy{Repo: &RepoQuery{GH: true, Conflicts: true}})
+	if err != nil || ctx.SelectedUser != "carol" || strings.Join(ctx.OwnerConflicts, ",") != "github.com/other-org,github.com/work-org" {
+		t.Fatalf("conflicts: %+v %v", ctx, err)
+	}
+	if ctx, err = ResolveContextWithPolicy(repo, Policy{Repo: &RepoQuery{GH: true}}); err != nil || ctx.OwnerConflicts != nil {
+		t.Fatalf("conflicts reported unasked: %+v %v", ctx, err)
+	}
+	runGit(t, repo, "remote", "remove", "upstream")
+	if ctx, err = ResolveContextWithPolicy(repo, Policy{Repo: &RepoQuery{GH: true, Conflicts: true}}); err != nil || ctx.OwnerConflicts != nil {
+		t.Fatalf("single owner reported as conflict: %+v %v", ctx, err)
 	}
 }

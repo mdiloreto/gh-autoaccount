@@ -35,6 +35,8 @@ type Context struct {
 	SelectedHost    string
 	Token           string
 	TokenSource     string
+	// OwnerConflicts lists owner pins matched by several remotes, when asked for.
+	OwnerConflicts []string
 }
 
 // ResolveContext resolves the current pin and token source for a directory.
@@ -61,15 +63,17 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 
 	var selectedPin *config.Pin
 	var pinSource string
+	var conflicts []string
 	if policy.User == "" || policy.RequirePin {
 		registry, err := config.LoadPins()
 		if err != nil {
 			return nil, fmt.Errorf("cannot load pin registry: %w", err)
 		}
-		selectedPin, pinSource, err = SelectPin(registry, dir, policy.Repo)
+		sel, err := selectPin(registry, dir, policy.Repo)
 		if err != nil {
 			return nil, fmt.Errorf("cannot select pin: %w", err)
 		}
+		selectedPin, pinSource, conflicts = sel.pin, sel.source, sel.conflicts
 	}
 	if policy.RequirePin && selectedPin == nil {
 		return nil, fmt.Errorf("no pin found for directory: %s (--require-pin)", absDir)
@@ -102,7 +106,7 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 		if policy.ExpectUser != "" {
 			return nil, fmt.Errorf("--expect-user %q: no profile selected for directory: %s", policy.ExpectUser, absDir)
 		}
-		return &Context{Dir: absDir, SelectionSource: "none"}, nil
+		return &Context{Dir: absDir, SelectionSource: "none", OwnerConflicts: conflicts}, nil
 	}
 	if policy.ExpectUser != "" && !strings.EqualFold(selectedUser, policy.ExpectUser) {
 		return nil, fmt.Errorf("--expect-user %q: selected profile is %q", policy.ExpectUser, selectedUser)
@@ -144,6 +148,7 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 		SelectedHost:    host,
 		Token:           token,
 		TokenSource:     source,
+		OwnerConflicts:  conflicts,
 	}
 	if err != nil {
 		return result, fmt.Errorf("cannot resolve token for '%s': %w", selectedUser, err)

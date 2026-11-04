@@ -18,6 +18,8 @@ type RepoQuery struct {
 	// `repo clone` target take precedence over the working directory.
 	GH   bool
 	Args []string // gh arguments, without the executable
+	// Conflicts also reports owner pins matched by more than one remote.
+	Conflicts bool
 }
 
 // RepoRef identifies an accessed repository by host and owner.
@@ -26,42 +28,69 @@ type RepoRef struct {
 	Owner string
 }
 
+type selection struct {
+	pin       *config.Pin
+	source    string
+	conflicts []string
+}
+
 // SelectPin applies the pin precedence below an explicit user: an owner pin
 // matching the accessed repository, then the deepest directory pin. The second
 // result is the selection source.
 func SelectPin(registry *config.PinRegistry, dir string, query *RepoQuery) (*config.Pin, string, error) {
+	sel, err := selectPin(registry, dir, query)
+	return sel.pin, sel.source, err
+}
+
+func selectPin(registry *config.PinRegistry, dir string, query *RepoQuery) (selection, error) {
+	var sel selection
 	// Detection can cost a git subprocess, so skip it without owner pins.
 	if query != nil && registry.HasOwnerPins() {
-		if ref, ok := detectRepo(query, dir); ok {
+		remotes := &remoteCache{dir: dir}
+		if ref, ok := detectRepo(query, remotes); ok {
 			if pin := registry.FindOwnerPin(ref.Host, ref.Owner); pin != nil {
-				return pin, "owner", nil
+				sel = selection{pin: pin, source: "owner"}
 			}
 		}
+		if query.Conflicts {
+			sel.conflicts = remotes.conflicts(registry)
+		}
 	}
-	pin, err := registry.FindPinStrict(dir)
-	if err != nil || pin == nil {
-		return nil, "", err
+	if sel.pin == nil {
+		pin, err := registry.FindPinStrict(dir)
+		if err != nil {
+			return sel, err
+		}
+		if pin != nil {
+			sel.pin, sel.source = pin, "pin"
+		}
 	}
-	return pin, "pin", nil
+	return sel, nil
 }
 
 // detectRepo prefers sources that name the repository explicitly and reads
 // the working directory's remotes, at most one git subprocess, last.
-func detectRepo(query *RepoQuery, dir string) (RepoRef, bool) {
+func detectRepo(query *RepoQuery, remotes *remoteCache) (RepoRef, bool) {
 	defaultHost := defaultRepoHost()
 	if query.GH {
+		if isRepoClone(query.Args) {
+			// gh ignores -R and GH_REPO when cloning.
+			if spec, found := cloneTarget(query.Args); found {
+				if ref, ok := parseRepoSpec(spec, defaultHost); ok {
+					return ref, true
+				}
+			}
+			// A bare REPO has no owner.
+			return remotes.selected()
+		}
 		if spec, found := repoFlag(query.Args); found {
 			return parseRepoSpec(spec, defaultHost)
 		}
 		if spec := os.Getenv("GH_REPO"); spec != "" {
 			return parseRepoSpec(spec, defaultHost)
 		}
-		if spec, found := cloneTarget(query.Args); found {
-			// A bare REPO resolves under the authenticated user: no owner.
-			return parseRepoSpec(spec, defaultHost)
-		}
 	}
-	return remoteRepo(dir)
+	return remotes.selected()
 }
 
 func defaultRepoHost() string {
@@ -71,29 +100,45 @@ func defaultRepoHost() string {
 	return "github.com"
 }
 
-// repoFlag finds gh's -R/--repo value in the forms pflag accepts.
+// repoFlag finds gh's -R/--repo value. gh's flag table is not known here, so a
+// candidate right after another bare flag might be that flag's value
+// (`-t -Rx`, `--body --repo x`) and never selects. --repo=X and -R=X are
+// unambiguous anywhere.
 func repoFlag(args []string) (string, bool) {
 	for i, arg := range args {
-		switch {
-		case arg == "--":
+		if arg == "--" {
 			return "", false
+		}
+		ambiguous := i > 0 && isBareFlag(args[i-1])
+		switch {
+		case strings.HasPrefix(arg, "--repo="):
+			return strings.TrimPrefix(arg, "--repo="), true
+		case strings.HasPrefix(arg, "-R="):
+			return strings.TrimPrefix(arg, "-R="), true
+		case ambiguous:
 		case arg == "-R" || arg == "--repo":
 			if i+1 < len(args) {
 				return args[i+1], true
 			}
 			return "", true
-		case strings.HasPrefix(arg, "--repo="):
-			return strings.TrimPrefix(arg, "--repo="), true
 		case strings.HasPrefix(arg, "-R") && !strings.HasPrefix(arg, "--"):
-			return strings.TrimPrefix(strings.TrimPrefix(arg, "-R"), "="), true
+			return strings.TrimPrefix(arg, "-R"), true
 		}
 	}
 	return "", false
 }
 
+func isBareFlag(arg string) bool {
+	return strings.HasPrefix(arg, "-") && arg != "--" && !strings.Contains(arg, "=")
+}
+
+func isRepoClone(args []string) bool {
+	return len(args) >= 2 && args[0] == "repo" && args[1] == "clone"
+}
+
 // cloneTarget returns the first positional argument of `gh repo clone`.
 func cloneTarget(args []string) (string, bool) {
-	if len(args) < 2 || args[0] != "repo" || args[1] != "clone" {
+	if !isRepoClone(args) {
 		return "", false
 	}
 	rest := args[2:]
@@ -156,22 +201,36 @@ func parseRemoteURL(raw string) (RepoRef, bool) {
 	return newRepoRef(host, segments[0], segments[1])
 }
 
+// newRepoRef rejects empty components: an empty host must not default to
+// github.com and match a github.com owner pin.
 func newRepoRef(host, owner, repo string) (RepoRef, bool) {
+	if host == "" || owner == "" || repo == "" {
+		return RepoRef{}, false
+	}
 	host, err := config.NormalizeHost(host)
-	if err != nil || owner == "" || repo == "" {
+	if err != nil {
 		return RepoRef{}, false
 	}
 	return RepoRef{Host: host, Owner: owner}, true
 }
 
-// remoteRepo selects the repository gh would treat as the working directory's:
-// the remote marked with gh-resolved, else origin, else the only remote.
-func remoteRepo(dir string) (RepoRef, bool) {
-	out, err := osexec.Command("git", "-C", dir, "config", "--null", "--get-regexp", `^remote\..*\.(url|gh-resolved)$`).Output()
-	if err != nil {
-		return RepoRef{}, false
+// remoteCache reads the working directory's remotes with one git subprocess.
+type remoteCache struct {
+	dir            string
+	loaded         bool
+	urls, resolved map[string]string
+}
+
+func (c *remoteCache) load() {
+	if c.loaded {
+		return
 	}
-	urls, resolved := map[string]string{}, map[string]string{}
+	c.loaded = true
+	c.urls, c.resolved = map[string]string{}, map[string]string{}
+	out, err := osexec.Command("git", "-C", c.dir, "config", "--null", "--get-regexp", `^remote\..*\.(url|gh-resolved)$`).Output()
+	if err != nil {
+		return
+	}
 	for _, entry := range strings.Split(string(out), "\x00") {
 		key, value, ok := strings.Cut(entry, "\n")
 		if !ok {
@@ -179,37 +238,67 @@ func remoteRepo(dir string) (RepoRef, bool) {
 		}
 		key, _ = strings.CutPrefix(key, "remote.")
 		if name, ok := strings.CutSuffix(key, ".gh-resolved"); ok {
-			resolved[name] = value
+			c.resolved[name] = value
 		} else if name, ok := strings.CutSuffix(key, ".url"); ok {
-			if _, seen := urls[name]; !seen {
-				urls[name] = value
+			if _, seen := c.urls[name]; !seen {
+				c.urls[name] = value
 			}
 		}
 	}
-	if len(resolved) > 0 {
-		names := make([]string, 0, len(resolved))
-		for name := range resolved {
+}
+
+// selected picks the repository gh would treat as the working directory's: the
+// remote marked gh-resolved, else upstream, github, origin in gh's order, else
+// the only remote.
+func (c *remoteCache) selected() (RepoRef, bool) {
+	c.load()
+	if len(c.resolved) > 0 {
+		names := make([]string, 0, len(c.resolved))
+		for name := range c.resolved {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		name := names[0]
-		remote, remoteOK := parseRemoteURL(urls[name])
-		if resolved[name] == "base" {
+		remote, remoteOK := parseRemoteURL(c.urls[name])
+		if c.resolved[name] == "base" {
 			return remote, remoteOK
 		}
 		defaultHost := defaultRepoHost()
 		if remoteOK {
 			defaultHost = remote.Host
 		}
-		return parseRepoSpec(resolved[name], defaultHost)
+		return parseRepoSpec(c.resolved[name], defaultHost)
 	}
-	if raw, ok := urls["origin"]; ok {
-		return parseRemoteURL(raw)
+	for _, name := range []string{"upstream", "github", "origin"} {
+		if raw, ok := c.urls[name]; ok {
+			return parseRemoteURL(raw)
+		}
 	}
-	if len(urls) == 1 {
-		for _, raw := range urls {
+	if len(c.urls) == 1 {
+		for _, raw := range c.urls {
 			return parseRemoteURL(raw)
 		}
 	}
 	return RepoRef{}, false
+}
+
+// conflicts lists the owner pins matched by any remote when there is more than
+// one: Git identity matches every remote while credentials follow one.
+func (c *remoteCache) conflicts(registry *config.PinRegistry) []string {
+	c.load()
+	matched := map[string]bool{}
+	for _, raw := range c.urls {
+		if ref, ok := parseRemoteURL(raw); ok && registry.FindOwnerPin(ref.Host, ref.Owner) != nil {
+			matched[ref.Host+"/"+strings.ToLower(ref.Owner)] = true
+		}
+	}
+	if len(matched) < 2 {
+		return nil
+	}
+	owners := make([]string, 0, len(matched))
+	for owner := range matched {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	return owners
 }
