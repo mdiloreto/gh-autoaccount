@@ -487,7 +487,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 						fmt.Printf("    Added to: %s\n", rcPath)
 					}
 				}
-				if installShim && !shims.CheckPathConfigured() {
+				if installShim && !shims.CheckPathBlockInstalled() && !shimDirWinsForGH() {
 					shimDir, err := shims.Dir()
 					if err != nil {
 						fmt.Printf("    Cannot resolve shim dir: %v\n", err)
@@ -624,6 +624,18 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 	return nil
+}
+
+// shimDirWinsForGH reports whether plain gh already resolves inside the shim
+// directory. Being on PATH is not enough: an earlier gh (Homebrew, a distro
+// package, a version manager) would still win.
+func shimDirWinsForGH() bool {
+	shimDir, err := shims.Dir()
+	if err != nil {
+		return false
+	}
+	resolved, err := exec.LookPath("gh")
+	return err == nil && filepath.Dir(resolved) == shimDir
 }
 
 // legacyDeprecation is shown wherever legacy (non-native) routing is active.
