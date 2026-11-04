@@ -48,6 +48,8 @@ type Policy struct {
 	User       string
 	RequirePin bool
 	ExpectUser string
+	// Repo enables owner-pin selection for the repository the command accesses.
+	Repo *RepoQuery
 }
 
 // ResolveContextWithPolicy selects a profile and resolves its credential.
@@ -57,30 +59,35 @@ func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
 		return nil, fmt.Errorf("cannot resolve directory: %w", err)
 	}
 
-	var directoryPin *config.Pin
+	var selectedPin *config.Pin
+	var pinSource string
 	if policy.User == "" || policy.RequirePin {
 		registry, err := config.LoadPins()
 		if err != nil {
 			return nil, fmt.Errorf("cannot load pin registry: %w", err)
 		}
-		directoryPin, err = registry.FindPinStrict(dir)
+		selectedPin, pinSource, err = SelectPin(registry, dir, policy.Repo)
 		if err != nil {
 			return nil, fmt.Errorf("cannot select pin: %w", err)
 		}
 	}
-	if policy.RequirePin && directoryPin == nil {
+	if policy.RequirePin && selectedPin == nil {
 		return nil, fmt.Errorf("no pin found for directory: %s (--require-pin)", absDir)
 	}
-	if policy.User != "" && policy.RequirePin && !strings.EqualFold(policy.User, directoryPin.User) {
-		return nil, fmt.Errorf("--user %q does not match directory pin", policy.User)
+	if policy.User != "" && policy.RequirePin && !strings.EqualFold(policy.User, selectedPin.User) {
+		kind := "directory"
+		if pinSource == "owner" {
+			kind = "owner"
+		}
+		return nil, fmt.Errorf("--user %q does not match %s pin", policy.User, kind)
 	}
 	var pin *config.Pin
 	var selectedUser, selectionSource string
 	if policy.User != "" && !policy.RequirePin {
 		selectedUser, selectionSource = policy.User, "explicit"
-	} else if directoryPin != nil {
-		pin = directoryPin
-		selectedUser, selectionSource = pin.User, "pin"
+	} else if selectedPin != nil {
+		pin = selectedPin
+		selectedUser, selectionSource = pin.User, pinSource
 	} else {
 		settings, loadErr := config.LoadSettings()
 		if loadErr != nil {

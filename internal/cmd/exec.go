@@ -43,7 +43,10 @@ injected into its environment. Environment variables are not exact-host scoped.
 Useful for non-interactive contexts (systemd timers, cron jobs, scripts)
 where direnv and shell wrappers are not available.
 
---require-pin requires a directory pin; --user cannot replace it.
+A pin for the accessed repository's owner (see pin --owner) outranks the
+directory pin; --user outranks both.
+
+--require-pin requires an owner or directory pin; --user cannot replace it.
 --expect-user checks the selected profile name (case-insensitive), not the
 remote token identity. --verify-identity checks the credential remotely before
 starting the child. --user without --require-pin selects a github.com account;
@@ -60,7 +63,7 @@ Examples:
 	}
 	cmd.Flags().String("dir", "", "Resolve the pin for this directory instead of the current working directory")
 	cmd.Flags().String("user", "", "Use this GitHub user directly instead of resolving a pin")
-	cmd.Flags().Bool("require-pin", false, "Require a directory pin, even with --user")
+	cmd.Flags().Bool("require-pin", false, "Require an owner or directory pin, even with --user")
 	cmd.Flags().String("expect-user", "", "Require this selected profile (case-insensitive), not a remote identity check")
 	cmd.Flags().Bool("verify-identity", false, "Verify the selected token identity before execution")
 	return cmd
@@ -109,7 +112,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot resolve directory %s: %w", cwd, err)
 	}
 
-	ctx, err := resolveExecContextWithPolicy(cwd, userFlag, requirePin, expectUser)
+	repo := &profileexec.RepoQuery{GH: filepath.Base(args[0]) == "gh", Args: args[1:]}
+	ctx, err := resolveExecContextWithPolicy(cwd, userFlag, requirePin, expectUser, repo)
 	if err != nil {
 		return err
 	}
@@ -140,11 +144,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 }
 
 func resolveExecContext(cwd, overrideUser string) (*execContext, error) {
-	return resolveExecContextWithPolicy(cwd, overrideUser, false, "")
+	return resolveExecContextWithPolicy(cwd, overrideUser, false, "", nil)
 }
 
-func resolveExecContextWithPolicy(cwd, overrideUser string, requirePin bool, expectUser string) (*execContext, error) {
-	ctx, err := profileexec.ResolveContextWithPolicy(cwd, profileexec.Policy{User: overrideUser, RequirePin: requirePin, ExpectUser: expectUser})
+func resolveExecContextWithPolicy(cwd, overrideUser string, requirePin bool, expectUser string, repo *profileexec.RepoQuery) (*execContext, error) {
+	ctx, err := profileexec.ResolveContextWithPolicy(cwd, profileexec.Policy{User: overrideUser, RequirePin: requirePin, ExpectUser: expectUser, Repo: repo})
 	if err != nil {
 		return nil, err
 	}

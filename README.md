@@ -448,6 +448,39 @@ single-token output; failure never falls back. An older binary that predates
 `host` or `token_command` cannot read those registry fields: remove them with the
 current binary or restore a reviewed backup before rolling back.
 
+### Owner pins
+
+A directory pin cannot help when Git is run from elsewhere: Git runs credential
+helpers in the invoking directory, so `git clone https://github.com/work-org/x ~/work/x`
+from `~` authenticates as the default account, not the `~/work` pin. Pin the
+organization or user instead:
+
+```bash
+gh autoaccount pin bob --owner work-org --git-email bob@example.test
+gh autoaccount unpin --owner work-org            # add --host for Enterprise
+```
+
+An owner pin has an `owner` and no `dir`; it is wrapper-mode only, never writes
+`.envrc`, matches the owner case-insensitively and is unique per `(host, owner)`.
+An older binary rejects a registry containing owner pins (unknown `owner` key).
+Selection precedence everywhere is: `exec --user`, then the owner pin for the
+accessed repository, then the deepest directory pin, then the configured default.
+The owner comes from the Git credential request path, gh's `-R/--repo`,
+`GH_REPO`, the target of `gh repo clone`, then the working directory's remote
+(the one marked `gh-resolved`, else `origin`, else the only remote). `exec
+--require-pin` accepts an owner or a directory pin. With `setup --git-identity`,
+`git_email`/`git_name` on an owner pin apply to repositories whose remote URL
+belongs to that owner and win over directory identity; this needs Git 2.36 or
+newer, and setup and doctor refuse or flag older Git instead of skipping it.
+
+For the Git path, `setup --credential-helper` also sets
+`credential.https://<host>.useHttpPath=true` on every managed host, because Git
+omits the repository path from helper requests otherwise. Every other helper in
+the chain, including the `gh auth git-credential` fallback, then sees per-path
+requests; credential stores that key on the path will keep one entry per
+repository. `doctor` reports the setting when it is missing and
+`doctor --fix` restores it.
+
 ### List all pins
 
 ```bash

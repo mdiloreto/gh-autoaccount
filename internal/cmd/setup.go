@@ -92,7 +92,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("cannot load pin registry: %w", err)
 		}
 		for _, pin := range registry.Pins {
-			if pin.EffectiveMode() == config.ModeWrapper {
+			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
 				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
 					return err
 				}
@@ -673,7 +673,7 @@ func runMigration() (migrationReport, error) {
 	}
 	if settings.Native {
 		for _, pin := range registry.Pins {
-			if pin.EffectiveMode() == config.ModeWrapper {
+			if !pin.IsOwner() && pin.EffectiveMode() == config.ModeWrapper {
 				if err := direnvlib.RequireManualEnvrcCleanup(pin.Dir); err != nil {
 					return report, err
 				}
@@ -710,6 +710,9 @@ func runMigration() (migrationReport, error) {
 	}
 
 	for _, pin := range registry.Pins {
+		if pin.IsOwner() {
+			continue
+		}
 		if _, err := os.Stat(pin.Dir); err != nil {
 			report.Warnings++
 			continue

@@ -89,10 +89,19 @@ func handleGitCredentialGet(req *credentialRequest) error {
 		fmt.Fprint(os.Stdout, "quit=true\n\n")
 		return err
 	}
-	pin, err := registry.FindPinStrict(".")
-	if err != nil {
-		fmt.Fprint(os.Stdout, "quit=true\n\n")
-		return err
+	// Git runs helpers in its invoking directory, not a clone's destination,
+	// so the repository owner in the request path outranks the cwd selection.
+	var pin *config.Pin
+	if req.host != "" {
+		owner, _, _ := strings.Cut(req.path, "/")
+		pin = registry.FindOwnerPin(req.host, strings.TrimSuffix(owner, ".git"))
+	}
+	if pin == nil {
+		pin, err = registry.FindPinStrict(".")
+		if err != nil {
+			fmt.Fprint(os.Stdout, "quit=true\n\n")
+			return err
+		}
 	}
 	user, selectedHost, tokenCommand := "", "", ""
 	if pin != nil {

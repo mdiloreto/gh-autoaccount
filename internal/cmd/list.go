@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
+	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
 	"github.com/spf13/cobra"
 )
 
@@ -15,8 +16,8 @@ func NewListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "list",
 		Aliases:           []string{"ls"},
-		Short:             "List all pinned directories",
-		Long:              `Show a table of all directories with pinned GitHub accounts.`,
+		Short:             "List all pinned directories and owners",
+		Long:              `Show a table of all directories and repository owners with pinned GitHub accounts.`,
 		RunE:              runList,
 		PersistentPreRunE: diagnosticsPreRun,
 	}
@@ -51,7 +52,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// Selection errors must not prevent listing the registry.
 	var selected *config.Pin
 	if cwd, err := os.Getwd(); err == nil {
-		selected, _ = registry.FindPinStrict(cwd)
+		selected, _, _ = profileexec.SelectPin(registry, cwd, &profileexec.RepoQuery{GH: true})
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -80,7 +81,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		description := describePin(pin)
-		fmt.Fprintf(w, "%s %s\t%s\t%s\t%t\t%s\t%s\t%s\t%s\n", marker, pin.Dir, pin.User, description.Host, description.TokenCommandConfigured, mode, email, name, sshKey)
+		target := pin.Dir
+		if pin.IsOwner() {
+			target = "owner:" + pin.Owner
+		}
+		fmt.Fprintf(w, "%s %s\t%s\t%s\t%t\t%s\t%s\t%s\t%s\n", marker, target, pin.User, description.Host, description.TokenCommandConfigured, mode, email, name, sshKey)
 	}
 
 	if err := w.Flush(); err != nil {

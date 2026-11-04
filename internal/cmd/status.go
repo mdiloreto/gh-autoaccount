@@ -63,7 +63,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		cmd.Printf("  Host:             %s\n", sanitizeStatusValue(pin.Host))
 		cmd.Printf("  Token command configured: %t\n", pin.TokenCommandConfigured)
 		cmd.Printf("  Token mode:       %s\n", sanitizeStatusValue(string(pin.Mode)))
-		if pin.Directory != cwd {
+		if pin.Owner != "" {
+			cmd.Printf("  Pinned owner:     %s\n", sanitizeStatusValue(pin.Owner))
+		} else if pin.Directory != cwd {
 			cmd.Printf("  Pinned directory: %s\n", sanitizeStatusValue(pin.Directory))
 		}
 		if pin.GitEmail != "" {
@@ -212,7 +214,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Diagnostics
 	cmd.Println()
-	if pin != nil {
+	if pin != nil && pin.Owner != "" {
+		cmd.Println("  Owner pin: selected per command from the accessed repository's owner; it outranks directory pins.")
+		if helperConfigured {
+			cmd.Println("  Plain git HTTPS uses the built-in gh-autoaccount credential helper.")
+		}
+	} else if pin != nil {
 		mode := pin.Mode
 		if mode == config.ModeWrapper {
 			if settings.Native {

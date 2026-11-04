@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 )
@@ -36,6 +39,9 @@ func Sync(registry *config.PinRegistry) error {
 // Install publishes identity before setup persists the opt-in setting.
 // Like Sync, the caller must hold the mutation lock.
 func Install(registry *config.PinRegistry) error {
+	if err := CheckOwnerIdentitySupport(registry); err != nil {
+		return err
+	}
 	path, err := Path()
 	if err != nil {
 		return err
@@ -53,25 +59,34 @@ func Install(registry *config.PinRegistry) error {
 			os.Remove(lock)
 		}
 	}()
-	pins := append([]config.Pin(nil), registry.Pins...)
-	// Git's last matching value wins; emit descendants after their ancestors.
-	sort.Slice(pins, func(i, j int) bool {
-		if len(pins[i].Dir) != len(pins[j].Dir) {
-			return len(pins[i].Dir) < len(pins[j].Dir)
-		}
-		return pins[i].Dir < pins[j].Dir
-	})
-	var includes [][2]string
-	for _, pin := range pins {
+	var dirPins, ownerPins []config.Pin
+	for _, pin := range registry.Pins {
 		if pin.GitName == "" && pin.GitEmail == "" {
 			continue
 		}
-		if !filepath.IsAbs(pin.Dir) || strings.ContainsAny(pin.Dir+pin.GitName+pin.GitEmail, "\x00") {
-			return fmt.Errorf("invalid Git identity pin directory or value")
+		if pin.IsOwner() {
+			ownerPins = append(ownerPins, pin)
+		} else {
+			dirPins = append(dirPins, pin)
 		}
-		// Content-addressed fragments keep the old main include valid until publication.
-		hash := sha256.Sum256([]byte(pin.Dir + "\x00" + pin.GitName + "\x00" + pin.GitEmail))
-		name := fmt.Sprintf("pin-%x.gitconfig", hash)
+	}
+	// Git's last matching value wins; emit descendants after their ancestors.
+	sort.Slice(dirPins, func(i, j int) bool {
+		if len(dirPins[i].Dir) != len(dirPins[j].Dir) {
+			return len(dirPins[i].Dir) < len(dirPins[j].Dir)
+		}
+		return dirPins[i].Dir < dirPins[j].Dir
+	})
+	sort.Slice(ownerPins, func(i, j int) bool {
+		return ownerIdentity(ownerPins[i]) < ownerIdentity(ownerPins[j])
+	})
+	// Content-addressed fragments keep the old main include valid until publication.
+	fragmentFor := func(identity string, pin config.Pin) (string, error) {
+		if strings.ContainsAny(identity+pin.GitName+pin.GitEmail, "\x00") {
+			return "", fmt.Errorf("invalid Git identity pin directory or value")
+		}
+		hash := sha256.Sum256([]byte(identity + "\x00" + pin.GitName + "\x00" + pin.GitEmail))
+		fragment := filepath.Join(dir, fmt.Sprintf("pin-%x.gitconfig", hash))
 		var values [][2]string
 		if pin.GitName != "" {
 			values = append(values, [2]string{"user.name", pin.GitName})
@@ -79,18 +94,43 @@ func Install(registry *config.PinRegistry) error {
 		if pin.GitEmail != "" {
 			values = append(values, [2]string{"user.email", pin.GitEmail})
 		}
-		fragment := filepath.Join(dir, name)
 		if _, err := os.Stat(fragment); os.IsNotExist(err) {
 			if err := writeConfig(fragment, values); err != nil {
-				return err
+				return "", err
 			}
 		} else if err != nil {
+			return "", err
+		}
+		return fragment, nil
+	}
+	var includes [][2]string
+	for _, pin := range dirPins {
+		if !filepath.IsAbs(pin.Dir) {
+			return fmt.Errorf("invalid Git identity pin directory or value")
+		}
+		fragment, err := fragmentFor(pin.Dir, pin)
+		if err != nil {
 			return err
 		}
 		// Escape wildmatch metacharacters, and require a directory boundary.
 		pattern := strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`).Replace(filepath.ToSlash(filepath.Clean(pin.Dir)))
 		pattern = strings.TrimSuffix(pattern, "/") + "/"
-		includes = append(includes, [2]string{"includeIf.gitdir:" + pattern + ".path", filepath.Join(dir, name)})
+		includes = append(includes, [2]string{"includeIf.gitdir:" + pattern + ".path", fragment})
+	}
+	// Owner identity is emitted after directory identity so it wins, matching
+	// the credential precedence: the accessed repository's owner outranks cwd.
+	for _, pin := range ownerPins {
+		fragment, err := fragmentFor(ownerIdentity(pin), pin)
+		if err != nil {
+			return err
+		}
+		host, err := config.NormalizeHost(pin.Host)
+		if err != nil {
+			return err
+		}
+		for _, pattern := range ownerRemotePatterns(host, pin.Owner) {
+			includes = append(includes, [2]string{"includeIf.hasconfig:remote.*.url:" + pattern + ".path", fragment})
+		}
 	}
 	before, readErr := os.ReadFile(path)
 	if readErr != nil && !os.IsNotExist(readErr) {
@@ -110,6 +150,65 @@ func Install(registry *config.PinRegistry) error {
 	}
 	lock = "" // A new Git writer may immediately acquire the same lock path.
 	// Retain immutable old fragments: a Git reader may already hold the old include.
+	return nil
+}
+
+func ownerIdentity(pin config.Pin) string {
+	host, _ := config.NormalizeHost(pin.Host)
+	return "owner:" + host + "/" + strings.ToLower(pin.Owner)
+}
+
+// ownerRemotePatterns lists the remote URL shapes of an owner's repositories.
+// hasconfig patterns are case-sensitive, so letters match in either case, as
+// owner and host names do on GitHub. Hosts and owners contain no wildmatch
+// metacharacters.
+func ownerRemotePatterns(host, owner string) []string {
+	h, o := foldCase(host), foldCase(owner)
+	return []string{
+		"https://" + h + "/" + o + "/**",
+		"git@" + h + ":" + o + "/**",
+		"ssh://git@" + h + "/" + o + "/**",
+	}
+}
+
+func foldCase(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if lower, upper := unicode.ToLower(r), unicode.ToUpper(r); lower != upper {
+			fmt.Fprintf(&b, "[%c%c]", lower, upper)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+var gitVersionPattern = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// CheckOwnerIdentitySupport fails when owner pins carry a Git identity but the
+// installed Git (before 2.36) cannot evaluate hasconfig includes: skipping them
+// silently would commit under the wrong identity.
+func CheckOwnerIdentitySupport(registry *config.PinRegistry) error {
+	needed := false
+	for _, pin := range registry.Pins {
+		needed = needed || pin.IsOwner() && (pin.GitName != "" || pin.GitEmail != "")
+	}
+	if !needed {
+		return nil
+	}
+	out, err := exec.Command("git", "--version").Output()
+	if err != nil {
+		return fmt.Errorf("cannot determine Git version for owner pin identity: %w", err)
+	}
+	m := gitVersionPattern.FindStringSubmatch(string(out))
+	if m == nil {
+		return fmt.Errorf("cannot parse Git version %q for owner pin identity", strings.TrimSpace(string(out)))
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < 2 || major == 2 && minor < 36 {
+		return fmt.Errorf("owner pin Git identity requires Git 2.36 or newer (found %s.%s); remove git_email/git_name from owner pins or upgrade Git", m[1], m[2])
+	}
 	return nil
 }
 

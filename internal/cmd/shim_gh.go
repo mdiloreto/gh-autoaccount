@@ -40,7 +40,7 @@ func NewShimGHCMD() *cobra.Command {
 			if shouldBypassAuthInjection(args) {
 				return profileexec.Execute(cmd.Context(), ".", argv, os.Environ(), os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
-			ctx, err := profileexec.ResolveContext(".", false)
+			ctx, err := profileexec.ResolveContextWithPolicy(".", profileexec.Policy{Repo: &profileexec.RepoQuery{GH: true, Args: args}})
 			if err != nil {
 				return err
 			}

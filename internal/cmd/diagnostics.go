@@ -16,7 +16,8 @@ type pinDiagnostics struct {
 	User                   string         `json:"user"`
 	Host                   string         `json:"host"`
 	TokenCommandConfigured bool           `json:"token_command_configured"`
-	Directory              string         `json:"directory"`
+	Directory              string         `json:"directory,omitempty"`
+	Owner                  string         `json:"owner,omitempty"`
 	Mode                   config.PinMode `json:"mode"`
 	GitName                string         `json:"git_name,omitempty"`
 	GitEmail               string         `json:"git_email,omitempty"`
@@ -32,7 +33,7 @@ func describePin(pin *config.Pin) *pinDiagnostics {
 		host = "(invalid)"
 	}
 	return &pinDiagnostics{
-		User: pin.User, Directory: pin.Dir, Mode: pin.EffectiveMode(),
+		User: pin.User, Directory: pin.Dir, Owner: pin.Owner, Mode: pin.EffectiveMode(),
 		Host: host, TokenCommandConfigured: pin.TokenCommand != "",
 		GitName: pin.GitName, GitEmail: pin.GitEmail, SSHKey: pin.SSHKey,
 	}
@@ -115,7 +116,8 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 	if err != nil {
 		return nil, diagnosticConfigError("pin registry", "pins.yml", err)
 	}
-	pin, err := registry.FindPinStrict(dir)
+	query := &profileexec.RepoQuery{GH: true}
+	pin, source, err := profileexec.SelectPin(registry, dir, query)
 	if err != nil {
 		return nil, fmt.Errorf("cannot select directory pin: %w", err)
 	}
@@ -138,11 +140,11 @@ func collectStatus(dir string) (*statusDiagnostics, error) {
 		Git:            inspectGit(absDir),
 	}
 	if pin != nil {
-		result.SelectedUser, result.SelectionSource = pin.User, "pin"
+		result.SelectedUser, result.SelectionSource = pin.User, source
 	} else if settings.DefaultUser != "" {
 		result.SelectedUser, result.SelectionSource = settings.DefaultUser, "default"
 	}
-	ctx, err := profileexec.ResolveContext(absDir, false)
+	ctx, err := profileexec.ResolveContextWithPolicy(absDir, profileexec.Policy{Repo: query})
 	if err != nil {
 		result.Authentication.Selected = result.SelectedUser != ""
 		result.Authentication.Source = "unavailable"
