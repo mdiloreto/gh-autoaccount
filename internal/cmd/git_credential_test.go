@@ -186,3 +186,18 @@ func TestCredentialHelperRejectsInvalidRegistry(t *testing.T) {
 		t.Fatalf("duplicate owner pins accepted: %q %v", out, err)
 	}
 }
+
+// A checkout's submodule under an owner-pinned organization authenticates as
+// the owner pin, but only on the pin's exact host.
+func TestCredentialHelperSubmoduleOwnerSelectsPinOnlyOnItsHost(t *testing.T) {
+	_, pinned := credentialFixture(t, "pins:\n  - user: alice\n    dir: \"{{work}}\"\n  - user: bob\n    owner: work-org\n")
+	t.Chdir(pinned)
+	out, err := runCredentialGet(t, "protocol=https\nhost=github.com\npath=work-org/sub.git\n\n")
+	if want := "username=x-access-token\npassword=tok-bob\n\n"; err != nil || out != want {
+		t.Fatalf("got %q (%v), want %q", out, err, want)
+	}
+	out, err = runCredentialGet(t, "protocol=https\nhost=evil.example\npath=work-org/sub.git\n\n")
+	if err == nil || out != "quit=true\n\n" || strings.Contains(out, "bob") {
+		t.Fatalf("foreign host must fail closed without bob's credential: %q (%v)", out, err)
+	}
+}

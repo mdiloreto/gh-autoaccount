@@ -700,8 +700,14 @@ The active direnv root is `DIRENV_CONFIG`, otherwise `XDG_CONFIG_HOME/direnv` or
 - **Export mode:** Tokens live in the shell environment and are accessible to its
   children; use only when required.
 - **Permissions:** `pins.yml` is 0600 and the config directory 0700.
-- **Selection:** Trusted pins, not repository content or remote metadata, select
-  credentials. Git identity, HTTPS authentication and SSH are separate.
+- **Selection:** Pins are the only source of accounts. With owner pins, the
+  repository URL being accessed (Git's credential path, `-R`/`GH_REPO`, the clone
+  target, or the checkout's remotes and submodules) chooses among them, and a
+  credential is returned only for the chosen pin's exact host. A checkout's remotes
+  or submodules can therefore make Git authenticate as an owner-pinned account for
+  URLs under that owner on that host: a personal-directory checkout with a
+  `work-org` submodule fetches it as the `work-org` account. Git identity, HTTPS
+  authentication and SSH are separate.
 - **Shell quoting:** Values written to `.envrc` use POSIX single-quote escaping.
 
 See [SECURITY.md](SECURITY.md) for trust boundaries and reporting.
