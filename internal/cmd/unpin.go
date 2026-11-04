@@ -8,7 +8,6 @@ import (
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
-	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/spf13/cobra"
 )
 
@@ -134,19 +133,9 @@ func runUnpin(cmd *cobra.Command, args []string) error {
 	if err := savePinsAndIdentity(registry); err != nil {
 		return errors.Join(fmt.Errorf("cannot remove pin and Git identity: %w", err), restoreEnvrc())
 	}
-	var helpers gitcred.HelperSnapshot
-	if gitcred.CheckConfigured() {
-		// Removed hosts retain their prior section: no historical helper snapshot exists.
-		hosts, err := gitcred.Hosts(registry)
-		if err == nil {
-			helpers, err = gitcred.SnapshotHosts(hosts)
-		}
-		if err == nil {
-			err = gitcred.ConfigureHosts(hosts)
-		}
-		if err != nil {
-			return errors.Join(fmt.Errorf("cannot refresh Git helpers: %w", err), gitcred.RestoreHosts(helpers), savePinsAndIdentity(previous), restoreEnvrc())
-		}
+	// Removed hosts retain their prior section: no historical helper snapshot exists.
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
+		return errors.Join(err, restoreEnvrc())
 	}
 	if dirErr != nil {
 		fmt.Printf("Unpinned '%s' from %s (directory inaccessible; .envrc cleanup skipped)\n", user, absDir)
@@ -181,7 +170,7 @@ func runUnpinOwner(owner, host string) error {
 	if err := savePinsAndIdentity(registry); err != nil {
 		return fmt.Errorf("cannot remove pin and Git identity: %w", err)
 	}
-	if err := refreshGitHelpers(registry, previous); err != nil {
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
 		return err
 	}
 	fmt.Printf("Unpinned '%s' from owner %s\n", user, owner)

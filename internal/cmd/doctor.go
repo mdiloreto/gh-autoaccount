@@ -216,13 +216,21 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("cannot inspect pin hosts: %w", err)
 		}
+		pathHosts, err := gitcred.OwnerHosts(registry)
+		if err != nil {
+			return fmt.Errorf("cannot inspect owner pin hosts: %w", err)
+		}
+		needsPath := map[string]bool{}
+		for _, host := range pathHosts {
+			needsPath[host] = true
+		}
 		configured := true
 		for _, host := range hosts {
 			if !gitcred.CheckConfiguredHost(host) {
 				configured = false
 				fmt.Printf("WARN git credential helper not configured for %s\n", host)
 				issues++
-			} else if !gitcred.CheckUseHTTPPathHost(host) {
+			} else if needsPath[host] && !gitcred.CheckUseHTTPPathHost(host) {
 				configured = false
 				fmt.Printf("WARN git credential.https://%s.useHttpPath is not true (owner pins need request paths)\n", host)
 				issues++

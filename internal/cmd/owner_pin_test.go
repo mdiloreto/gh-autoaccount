@@ -150,8 +150,11 @@ func TestPinOwnerRefreshesHelpersUseHTTPPathAndUnpinRemoves(t *testing.T) {
 	if err := runPinCmd(t, "dana", "--owner", "ghe-org", "--host", "GHE.example.test", "--token-command", broker); err != nil {
 		t.Fatal(err)
 	}
-	if !gitcred.CheckConfiguredHost("ghe.example.test") || !gitcred.CheckUseHTTPPathHost("ghe.example.test") || !gitcred.CheckUseHTTPPathHost("github.com") {
+	if !gitcred.CheckConfiguredHost("ghe.example.test") || !gitcred.CheckUseHTTPPathHost("ghe.example.test") {
 		t.Fatal("helper or useHttpPath not configured for the owner pin's host")
+	}
+	if gitcred.CheckUseHTTPPathHost("github.com") {
+		t.Fatal("useHttpPath enabled on a host without owner pins")
 	}
 	registry, _ := config.LoadPins()
 	if registry.Pins[0].Host != "ghe.example.test" {
@@ -321,6 +324,9 @@ func TestShimSelectsOwnerPinFromEverySource(t *testing.T) {
 	resolved := repoWithRemote(t, filepath.Join(home, "r4"), "https://github.com/me/fork.git")
 	gitIn(t, resolved, "remote", "add", "upstream", "https://github.com/work-org/x.git")
 	gitIn(t, resolved, "config", "remote.upstream.gh-resolved", "base")
+	sshRemoteOther := repoWithRemote(t, filepath.Join(home, "r7"), "git@github.com:other-org/x.git")
+	upstreamFirst := repoWithRemote(t, filepath.Join(home, "r8"), "https://github.com/work-org/x.git")
+	gitIn(t, upstreamFirst, "remote", "add", "upstream", "https://github.com/someone/x.git")
 	otherInWork := repoWithRemote(t, filepath.Join(work, "r5"), "https://github.com/other-org/x.git")
 	bare := repoWithRemote(t, filepath.Join(home, "r6"), "")
 	for _, tc := range []struct {
@@ -342,7 +348,15 @@ func TestShimSelectsOwnerPinFromEverySource(t *testing.T) {
 		{"repo clone url with destination", unpinned, nil, []string{"repo", "clone", "https://github.com/work-org/x", "dest", "--", "--depth=1"}, "tok-bob"},
 		{"repo clone beats cwd dir pin", work, nil, []string{"repo", "clone", "work-org/x"}, "tok-bob"},
 		{"repo clone elsewhere keeps dir pin", work, nil, []string{"repo", "clone", "other-org/x"}, "tok-carol"},
-		{"repo clone bare name has no owner", sshRemote, nil, []string{"repo", "clone", "x"}, "tok-alice"},
+		{"repo clone bare name uses the remote", sshRemote, nil, []string{"repo", "clone", "x"}, "tok-bob"},
+		{"repo clone ignores GH_REPO", unpinned, map[string]string{"GH_REPO": "work-org/x"}, []string{"repo", "clone", "other-org/x"}, "tok-alice"},
+		{"value of another flag is not -R", sshRemoteOther, nil, []string{"issue", "create", "-t", "-Rwork-org/x", "-b", "body"}, "tok-alice"},
+		{"value of --body is not --repo", sshRemoteOther, nil, []string{"issue", "create", "--body", "--repo", "work-org/x"}, "tok-alice"},
+		{"--repo= after a flag is explicit", sshRemoteOther, nil, []string{"issue", "create", "-t", "--repo=work-org/x"}, "tok-bob"},
+		{"-R after a non-flag token is explicit", sshRemoteOther, nil, []string{"issue", "create", "title", "-R", "work-org/x"}, "tok-bob"},
+		{"ambiguous -R falls to GH_REPO", sshRemoteOther, map[string]string{"GH_REPO": "work-org/x"}, []string{"issue", "create", "-t", "-Rother-org/x"}, "tok-bob"},
+		{"upstream outranks origin", upstreamFirst, nil, []string{"pr", "list"}, "tok-alice"},
+		{"empty host never matches", unpinned, nil, []string{"pr", "list", "-R", "/work-org/x"}, "tok-alice"},
 		{"scp remote", sshRemote, nil, []string{"pr", "list"}, "tok-bob"},
 		{"ssh url remote", sshURLRemote, nil, []string{"pr", "list"}, "tok-bob"},
 		{"https remote", httpsRemote, nil, []string{"pr", "list"}, "tok-bob"},
@@ -390,6 +404,7 @@ func TestExecSelectsOwnerPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	owned := repoWithRemote(t, filepath.Join(home, "owned"), "git@github.com:work-org/x.git")
+	personal := repoWithRemote(t, filepath.Join(home, "personal"), "git@github.com:alice/p.git")
 	sh := []string{"--", "sh", "-c", `printf 'token=%s user=%s' "$GH_TOKEN" "$GH_AUTOPROFILE_USER"`}
 	for _, tc := range []struct {
 		name    string
@@ -399,6 +414,7 @@ func TestExecSelectsOwnerPin(t *testing.T) {
 		wantErr string
 	}{
 		{"gh -R", unpinned, []string{"--", "gh", "pr", "list", "-R", "work-org/x"}, "token=tok-bob ", ""},
+		{"ambiguous -R cannot satisfy require-pin", personal, []string{"--require-pin", "--expect-user", "bob", "--", "gh", "issue", "create", "-t", "-Rwork-org/x"}, "", "no pin found"},
 		{"gh repo clone", unpinned, []string{"--", "gh", "repo", "clone", "work-org/x"}, "token=tok-bob ", ""},
 		{"non-gh child uses cwd remote", owned, sh, "token=tok-bob user=bob", ""},
 		{"non-gh child ignores gh flags", unpinned, []string{"--", "sh", "-c", `printf 'token=%s' "$GH_TOKEN"`, "-R", "work-org/x"}, "token=tok-alice", ""},
@@ -494,6 +510,7 @@ func TestFailedNativeSetupRestoresUseHTTPPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	savePins(t, config.Pin{User: "alice", Owner: "work-org", Mode: config.ModeWrapper})
 	trace := filepath.Join(home, "git-trace")
 	t.Setenv("GIT_TRACE", trace)
 	// Native setup configures the helper first; a directory where the shell hook
@@ -542,4 +559,59 @@ func captureSilently(t *testing.T, run func()) string {
 	out := <-done
 	r.Close()
 	return out
+}
+
+func TestDoctorIgnoresUseHTTPPathWithoutOwnerPins(t *testing.T) {
+	home := ownerHome(t)
+	dir := filepath.Join(home, "work")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	savePins(t, config.Pin{User: "alice", Dir: dir, Mode: config.ModeWrapper})
+	if err := gitcred.ConfigureGit(); err != nil {
+		t.Fatal(err)
+	}
+	if out := captureOnboarding(t, NewDoctorCmd().Execute); strings.Contains(out, "useHttpPath") {
+		t.Fatalf("doctor warned about useHttpPath without owner pins:\n%s", out)
+	}
+	savePins(t, config.Pin{User: "alice", Dir: dir, Mode: config.ModeWrapper}, config.Pin{User: "bob", Owner: "work-org", Mode: config.ModeWrapper})
+	if out := captureOnboarding(t, NewDoctorCmd().Execute); !strings.Contains(out, "github.com.useHttpPath is not true") {
+		t.Fatalf("doctor missed useHttpPath with an owner pin:\n%s", out)
+	}
+}
+
+func TestStatusWarnsWhenRemotesMatchSeveralOwnerPins(t *testing.T) {
+	home := ownerHome(t)
+	savePins(t,
+		config.Pin{User: "bob", Owner: "work-org", Mode: config.ModeWrapper},
+		config.Pin{User: "carol", Owner: "other-org", Mode: config.ModeWrapper},
+	)
+	repo := repoWithRemote(t, filepath.Join(home, "mixed"), "https://github.com/work-org/x.git")
+	gitIn(t, repo, "remote", "add", "upstream", "https://github.com/other-org/x.git")
+	command := NewStatusCmd()
+	var buf bytes.Buffer
+	command.SetOut(&buf)
+	command.SetArgs([]string{"--json", "--dir", repo})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var got statusDiagnostics
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil || strings.Join(got.ConflictingOwnerPins, ",") != "github.com/other-org,github.com/work-org" {
+		t.Fatalf("json: %s %v", buf.String(), err)
+	}
+	command = NewStatusCmd()
+	buf.Reset()
+	command.SetOut(&buf)
+	command.SetArgs([]string{"--dir", repo})
+	if err := command.Execute(); err != nil || !strings.Contains(buf.String(), "WARN: remotes of this checkout match several owner pins") {
+		t.Fatalf("text: %s %v", buf.String(), err)
+	}
+	gitIn(t, repo, "remote", "remove", "upstream")
+	command = NewStatusCmd()
+	buf.Reset()
+	command.SetOut(&buf)
+	command.SetArgs([]string{"--json", "--dir", repo})
+	if err := command.Execute(); err != nil || strings.Contains(buf.String(), "conflicting_owner_pins") {
+		t.Fatalf("single owner flagged: %s %v", buf.String(), err)
+	}
 }

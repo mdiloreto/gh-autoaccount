@@ -102,6 +102,23 @@ func Hosts(registry *config.PinRegistry) ([]string, error) {
 
 // HelperSnapshot records, per host, every global value this package manages in
 // the host's credential section, so rollback restores exactly what existed.
+// OwnerHosts returns the normalized hosts that have an owner pin, the only
+// hosts where useHttpPath is needed.
+func OwnerHosts(registry *config.PinRegistry) ([]string, error) {
+	var hosts []string
+	for _, pin := range registry.Pins {
+		if !pin.IsOwner() {
+			continue
+		}
+		host, err := config.NormalizeHost(pin.Host)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
 type HelperSnapshot map[string]HostState
 
 // HostState is the managed global configuration of one host section.
@@ -134,22 +151,33 @@ func RestoreHosts(snapshot HelperSnapshot) error {
 	return result
 }
 
-func ConfigureHosts(hosts []string) error {
+// ConfigureHosts installs the helper chain on hosts and enables useHttpPath on
+// pathHosts only. useHttpPath is never unset automatically: other helpers may
+// rely on it.
+func ConfigureHosts(hosts []string, pathHosts ...string) error {
 	snapshot, err := SnapshotHosts(hosts)
 	if err != nil {
 		return err
 	}
+	wantPath := map[string]bool{}
+	for _, host := range pathHosts {
+		normalized, err := config.NormalizeHost(host)
+		if err != nil {
+			return err
+		}
+		wantPath[normalized] = true
+	}
 	for host, existing := range snapshot {
-		if err := configureHost(host, existing.Helpers, existing.UseHTTPPath); err != nil {
+		if err := configureHost(host, existing.Helpers, existing.UseHTTPPath, wantPath[host]); err != nil {
 			return errors.Join(err, RestoreHosts(snapshot))
 		}
 	}
 	return nil
 }
 
-// configureHost installs the helper chain and enables useHttpPath: Git sends
-// the repository path to helpers only then, and owner routing needs it.
-func configureHost(host string, existing, useHTTPPath []string) error {
+// configureHost installs the helper chain and, for hosts with owner pins,
+// enables useHttpPath: Git sends the repository path to helpers only then.
+func configureHost(host string, existing, useHTTPPath []string, enablePath bool) error {
 	helperPath, err := HelperPath()
 	if err != nil {
 		return err
@@ -172,8 +200,11 @@ func configureHost(host string, existing, useHTTPPath []string) error {
 	if err := replaceHelpersHost(host, desired); err != nil {
 		return err
 	}
-	if len(useHTTPPath) == 1 && useHTTPPath[0] == "true" {
+	if !enablePath || len(useHTTPPath) == 1 && useHTTPPath[0] == "true" {
 		return nil
+	}
+	if value, isFalse := explicitFalse(useHTTPPath); isFalse {
+		fmt.Fprintf(os.Stderr, "Note: overwriting credential.https://%s.useHttpPath=%s with true; owner pins need request paths.\n", host, value)
 	}
 	return replaceGlobalValues(useHTTPPathKey(host), []string{"true"})
 }
@@ -184,6 +215,19 @@ func configuredHelpers() ([]string, error) {
 
 func configuredHelpersHost(host string) ([]string, error) {
 	return globalValues("credential.https://" + host + ".helper")
+}
+
+// explicitFalse reports whether the effective (last) value is a Git false.
+func explicitFalse(values []string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	last := strings.ToLower(strings.TrimSpace(values[len(values)-1]))
+	switch last {
+	case "false", "no", "off", "0":
+		return last, true
+	}
+	return "", false
 }
 
 func useHTTPPathKey(host string) string { return "credential.https://" + host + ".useHttpPath" }

@@ -466,19 +466,29 @@ An older binary rejects a registry containing owner pins (unknown `owner` key).
 Selection precedence everywhere is: `exec --user`, then the owner pin for the
 accessed repository, then the deepest directory pin, then the configured default.
 The owner comes from the Git credential request path, gh's `-R/--repo`,
-`GH_REPO`, the target of `gh repo clone`, then the working directory's remote
-(the one marked `gh-resolved`, else `origin`, else the only remote). `exec
---require-pin` accepts an owner or a directory pin. With `setup --git-identity`,
-`git_email`/`git_name` on an owner pin apply to repositories whose remote URL
-belongs to that owner and win over directory identity; this needs Git 2.36 or
-newer, and setup and doctor refuse or flag older Git instead of skipping it.
+`GH_REPO`, the target of `gh repo clone` (which ignores both `-R` and `GH_REPO`),
+then the working directory's remote: the one marked `gh-resolved`, else
+`upstream`, `github`, `origin` (gh's order), else the only remote. gh's flag table
+is not known here, so a `-R` right after another flag could be that flag's value
+and never selects: put `--repo=OWNER/REPO`, or `-R` before other flags. `exec
+--require-pin` accepts an owner or a directory pin.
 
-For the Git path, `setup --credential-helper` also sets
-`credential.https://<host>.useHttpPath=true` on every managed host, because Git
-omits the repository path from helper requests otherwise. Every other helper in
-the chain, including the `gh auth git-credential` fallback, then sees per-path
-requests; credential stores that key on the path will keep one entry per
-repository. `doctor` reports the setting when it is missing and
+With `setup --git-identity`, `git_email`/`git_name` on an owner pin apply to
+repositories with a remote URL (https with or without userinfo, scp-style or
+ssh with or without a port) under that owner, and win over directory identity;
+this needs Git 2.36 or newer, and setup and doctor refuse or flag older Git.
+Known limitation: Git can only match `remote.*.url`, so identity matches every
+remote while credentials follow the one remote above. A checkout whose remotes
+map to several owner pins can therefore disagree, and `status` warns about it
+(`conflicting_owner_pins` in `--json`).
+
+For the Git path, setup and pin also set `credential.https://<host>.useHttpPath=true`
+on hosts that have an owner pin, because Git omits the repository path from
+helper requests otherwise; an explicit `false` is overwritten with a note. It is
+never unset automatically, even after the last owner pin is removed. Every other
+helper in the chain, including the `gh auth git-credential` fallback, then sees
+per-path requests; credential stores that key on the path keep one entry per
+repository. `doctor` reports a missing setting only for hosts with owner pins and
 `doctor --fix` restores it.
 
 ### List all pins

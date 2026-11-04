@@ -216,7 +216,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	var shimSnapshot, recordSnapshot, helperSnapshot, settingsSnapshot, libSnapshot, hookSnapshot setupFileSnapshot
 	var rollback []func() error
 	var priorHelpers gitcred.HelperSnapshot
-	var helperHosts []string
+	var helperHosts, helperPathHosts []string
 	var helperRealGH string
 	configDir, err := config.ConfigDir()
 	if err != nil {
@@ -261,6 +261,9 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		helperHosts, err = gitcred.Hosts(registry)
 		if err != nil {
+			return err
+		}
+		if helperPathHosts, err = gitcred.OwnerHosts(registry); err != nil {
 			return err
 		}
 		priorHelpers, err = gitcred.SnapshotHosts(helperHosts)
@@ -323,7 +326,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
 			return fmt.Errorf("cannot install required Git credential helper: %w", err)
 		}
-		if err := gitcred.ConfigureHosts(helperHosts); err != nil {
+		if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
 			return fmt.Errorf("cannot configure required Git credential helper: %w", err)
 		}
 		credHelper = true
@@ -454,7 +457,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		} else if _, err := gitcred.Install(binPath, helperRealGH); err != nil {
 			fmt.Println("FAILED")
 			return fmt.Errorf("cannot install Git helper: %w", err)
-		} else if err := gitcred.ConfigureHosts(helperHosts); err != nil {
+		} else if err := gitcred.ConfigureHosts(helperHosts, helperPathHosts...); err != nil {
 			fmt.Println("FAILED")
 			return fmt.Errorf("cannot configure Git helper: %w", err)
 		} else {

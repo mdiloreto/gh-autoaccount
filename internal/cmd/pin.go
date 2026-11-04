@@ -138,18 +138,9 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 	if err := savePinsAndIdentity(registry); err != nil {
 		return fmt.Errorf("cannot save pin and Git identity: %w", err)
 	}
-	var helpers gitcred.HelperSnapshot
-	if gitcred.CheckConfigured() {
-		hosts, err := gitcred.Hosts(registry)
-		if err == nil {
-			helpers, err = gitcred.SnapshotHosts(hosts)
-		}
-		if err == nil {
-			err = gitcred.ConfigureHosts(hosts)
-		}
-		if err != nil {
-			return errors.Join(fmt.Errorf("cannot refresh Git helpers: %w", err), gitcred.RestoreHosts(helpers), savePinsAndIdentity(previous))
-		}
+	helpers, err := refreshGitHelpers(registry, previous)
+	if err != nil {
+		return err
 	}
 
 	if !native {
@@ -257,22 +248,26 @@ func canonicalSSHKey(sshKey string) (string, error) {
 
 // refreshGitHelpers reconfigures managed Git host sections when the helper is
 // active. On failure it restores the helpers and the previous registry.
-func refreshGitHelpers(registry, previous *config.PinRegistry) error {
+func refreshGitHelpers(registry, previous *config.PinRegistry) (gitcred.HelperSnapshot, error) {
 	if !gitcred.CheckConfigured() {
-		return nil
+		return nil, nil
 	}
 	var helpers gitcred.HelperSnapshot
+	var pathHosts []string
 	hosts, err := gitcred.Hosts(registry)
+	if err == nil {
+		pathHosts, err = gitcred.OwnerHosts(registry)
+	}
 	if err == nil {
 		helpers, err = gitcred.SnapshotHosts(hosts)
 	}
 	if err == nil {
-		err = gitcred.ConfigureHosts(hosts)
+		err = gitcred.ConfigureHosts(hosts, pathHosts...)
 	}
 	if err != nil {
-		return errors.Join(fmt.Errorf("cannot refresh Git helpers: %w", err), gitcred.RestoreHosts(helpers), savePinsAndIdentity(previous))
+		return helpers, errors.Join(fmt.Errorf("cannot refresh Git helpers: %w", err), gitcred.RestoreHosts(helpers), savePinsAndIdentity(previous))
 	}
-	return nil
+	return helpers, nil
 }
 
 // runPinOwner pins an account to a repository owner. Owner pins never touch
@@ -310,7 +305,7 @@ func runPinOwner(user, owner, gitEmail, gitName, sshKey, host, tokenCommand stri
 	if err := savePinsAndIdentity(registry); err != nil {
 		return fmt.Errorf("cannot save pin and Git identity: %w", err)
 	}
-	if err := refreshGitHelpers(registry, previous); err != nil {
+	if _, err := refreshGitHelpers(registry, previous); err != nil {
 		return err
 	}
 
