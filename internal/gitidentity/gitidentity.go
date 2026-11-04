@@ -166,8 +166,10 @@ func ownerRemotePatterns(host, owner string) []string {
 	h, o := foldCase(host), foldCase(owner)
 	return []string{
 		"https://" + h + "/" + o + "/**",
+		"https://*@" + h + "/" + o + "/**",
 		"git@" + h + ":" + o + "/**",
 		"ssh://git@" + h + "/" + o + "/**",
+		"ssh://git@" + h + ":*/" + o + "/**",
 	}
 }
 
