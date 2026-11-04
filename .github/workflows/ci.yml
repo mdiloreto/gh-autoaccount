@@ -50,6 +50,9 @@ jobs:
         with:
           go-version: "1.27.x"
       - run: go vet ./...
+      # The rest of the suite drives POSIX shells; Windows behavior lives in
+      # tests named for it.
+      - run: go test -count=1 -run Windows ./...
       - run: go build ./...
 
   release-snapshot:
