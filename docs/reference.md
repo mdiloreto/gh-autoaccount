@@ -47,8 +47,8 @@ gh autoaccount pin bob --owner work-org --git-email bob@example.test
 gh autoaccount unpin --owner work-org            # add --host for Enterprise
 ```
 
-An owner pin has an `owner` and no `dir`, never writes `.envrc`, does not support
-`--export-token`, matches the owner case-insensitively and is unique per
+An owner pin has an `owner` and no `dir`, matches the owner case-insensitively and
+is unique per
 `(host, owner)`. `exec --require-pin` accepts an owner or a directory pin.
 
 The owner comes from, in order: the Git credential request path, gh's `-R/--repo`,

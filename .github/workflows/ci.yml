@@ -20,21 +20,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
-      - run: sudo apt-get update && sudo apt-get install -y zsh direnv shellcheck acl gh jq
-      - name: Install verified direnv 2.38.2
-        run: |
-          GOBIN="$RUNNER_TEMP/direnv-bin" go install github.com/direnv/direnv/v2@v2.38.2
-          test "$("$RUNNER_TEMP/direnv-bin/direnv" version)" = 2.38.2
-          echo "$RUNNER_TEMP/direnv-bin" >> "$GITHUB_PATH"
-      - name: Verify real direnv integration
-        run: go test -count=1 -v ./internal/direnv -run '^TestAllowSnapshotRealDirenv$'
-        env:
-          GH_AUTOPROFILE_REQUIRE_DIRENV_2382: "1"
+      - run: sudo apt-get update && sudo apt-get install -y zsh shellcheck gh jq
       - run: go mod tidy -diff
       - run: go test -count=1 ./...
         env:
           GOTOOLCHAIN: local
-          GH_AUTOPROFILE_REQUIRE_DIRENV_2382: "1"
       - if: matrix.go == '1.27.x'
         run: go test -race -count=1 ./...
       - run: go vet ./...
@@ -48,7 +38,7 @@ jobs:
       - if: matrix.go == '1.27.x'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - if: matrix.go == '1.27.x'
-        run: shellcheck --severity=warning internal/direnv/shell/*.sh scripts/*.sh
+        run: shellcheck --severity=warning scripts/*.sh
       - if: matrix.go == '1.27.x'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
@@ -59,7 +49,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.x"
-      - run: go test -count=1 ./internal/direnv -run "TestWriteEnvrc_(PreservesExistingContent|UpdatesExistingBlock)$"
+      - run: go vet ./...
       - run: go build ./...
 
   release-snapshot:

@@ -8,15 +8,12 @@ not gain access to the wrong stored GitHub credential or silently act as the
 wrong account.
 
 In scope — a fix is expected if broken:
-- detected unmanaged `.envrc` content requires manual review and `direnv allow`
-- `pin` and `setup --migrate` skip auto-allow when the directory or original or
-  rewritten `.envrc` is group/other-writable, or cannot be inspected
-- automatic authorization uses direnv 2.38.2's private allow format to bind the
-  entry to generated, inspected bytes; unsupported platforms, versions and
-  filesystems and configurations, existing deny entries, ACLs, legacy stores
-  and required files need manual review
-- wrapper-mode tokens live only in child processes, never in the parent shell
-- generated shims, hooks, and helper scripts quote interpolated paths literally
+- cleanup of the retired direnv modes revokes direnv authorization before removing
+  a managed `.envrc` block, keeps every other byte, and refuses symlinked files,
+  malformed markers and a file that changes during cleanup. It deletes the old
+  library and hook only when they are regular files carrying this tool's header
+- tokens live only in child processes, never in the parent shell
+- generated shims and helper scripts quote interpolated paths literally
 - account activation fails closed instead of falling back to another account
 - pins are the only source of accounts: canonical physical directory pins and
   `(host, user)` select credentials. With owner pins, the repository URL being
@@ -32,31 +29,16 @@ In scope — a fix is expected if broken:
   selected host's remote principal when requested; `--expect-user` alone checks
   only the selected profile
 - parsed third-party output (e.g. `gh auth status`) is sanitized before display
-- a fatal native/legacy setup transition after an RC edit restores the actual
-  RC target and the pre-transition managed assets, settings, and helper chain;
-  an RC symlink is not replaced
+- a fatal setup failure after an RC edit restores the actual RC target and the
+  previous managed assets, settings, and helper chain; an RC symlink is not
+  replaced
 
 Out of scope — accepted trust boundaries:
 - startup executable resolution. An externally supplied absolute `GH_PATH` is
   authoritative; otherwise initial discovery uses `PATH`. Keep both trusted.
-  Setup-generated helper, shim, and direnv-library surfaces embed the resolved
-  absolute real-`gh` and extension paths and override hostile inherited routing
-  markers instead of rediscovering through a project-controlled `PATH`.
-- The shell hook pins `gh`/`git` and supported shebang interpreters when sourced,
-  before project PATH changes. It unwraps the generated gh shim without evaluating
-  its contents. Simple `env name`, `env -S name`, and `env --split-string=name`
-  shebangs and absolute native interpreters without arguments are supported;
-  ambiguous/unsupported forms fail closed in wrapper mode. Start a fresh trusted
-  shell after changing executables. Executable files, their interpreter paths,
-  script bodies, startup files and runtime dependencies must remain trusted;
-  this is not a sandbox for arbitrary third-party wrappers.
-- Auto-allow is a convenience for trusted, single-user checkouts. Its content
-  binding does not lock the checkout or prevent direnv's own subsequent
-  check-to-execution race. Same-UID processes can directly alter direnv state.
-  Checks cannot eliminate concurrent same-UID mutation or account for every
-  filesystem-specific write grant.
-  Do not use automatic authorization in a checkout with concurrent untrusted
-  writers, even if its local mode bits pass. Review and allow manually instead.
+  Setup-generated helper and shim surfaces embed the resolved absolute real-`gh`
+  and extension paths and override hostile inherited routing markers instead of
+  rediscovering through a project-controlled `PATH`.
 - Canonical path matching is a routing rule, not a lock. It does not prevent a
   same-UID process from replacing a path or symlink between inspection and use.
 - Absolute generated routes are likewise not immutable: a same-UID process can
@@ -67,8 +49,8 @@ Out of scope — accepted trust boundaries:
   shell per command with sanitized credential variables, a timeout, and bounded
   single-token output. It is authoritative and does not fall back after failure.
   Its executable and dependencies are not sandboxed.
-- Export mode is explicit compatibility behavior: tokens are exposed to the shell
-  environment and its children. Command-scoped injection is not a sandbox either.
+- Command-scoped injection is not a sandbox: `exec` hands its child and that
+  child's descendants the selected token.
 - GitHub infrastructure, the `gh` keyring, and TLS to the selected GitHub host.
 
 ## Release artifacts

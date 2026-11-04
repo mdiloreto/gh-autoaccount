@@ -26,18 +26,11 @@ jobs:
           go-version: "1.27.3"
 
       - name: Install shell test dependencies
-        run: sudo apt-get update && sudo apt-get install -y zsh direnv gh
-
-      - name: Install verified direnv 2.38.2
-        run: |
-          GOBIN="$RUNNER_TEMP/direnv-bin" go install github.com/direnv/direnv/v2@v2.38.2
-          test "$("$RUNNER_TEMP/direnv-bin/direnv" version)" = 2.38.2
-          echo "$RUNNER_TEMP/direnv-bin" >> "$GITHUB_PATH"
+        run: sudo apt-get update && sudo apt-get install -y zsh gh
 
       - name: Test release source
         env:
           GOTOOLCHAIN: local
-          GH_AUTOPROFILE_REQUIRE_DIRENV_2382: "1"
           GH_AUTOPROFILE_REQUIRE_REAL_GH: "1"
         run: |
           go mod tidy -diff
