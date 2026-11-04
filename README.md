@@ -26,7 +26,7 @@ gh autoaccount --version
 ```
 
 This installs a precompiled binary from the latest release. To install a specific
-release, add `--pin <tag>` (for example `--pin v0.1.0-beta.3`); GitHub CLI only
+release, add `--pin <tag>` with a tag from the Releases page; GitHub CLI only
 installs precompiled extensions from the latest release. Upgrade with
 `gh extension upgrade autoaccount`, then run `gh autoaccount setup --migrate` to
 refresh generated files. Checksums in `checksums.txt` detect corruption of a manual
@@ -253,6 +253,7 @@ Development requires Go 1.26 or newer:
 
 ```bash
 git clone https://github.com/mdiloreto/gh-autoaccount
+cd gh-autoaccount
 go build -o bin/gh-autoaccount ./cmd/gh-autoaccount
 go test ./...
 ```
