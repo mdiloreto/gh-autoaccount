@@ -170,6 +170,50 @@ missing pins before the child runs. Explicit `exec` passes credentials to the ch
 and descendants; it is not a sandbox. Export mode deliberately exposes tokens to
 the shell and its children. Never share tokens or private keys in diagnostics.
 
+## Agent skill
+
+**Unreleased: requires a build containing this feature; not in v0.1.0-beta.1.**
+Print the bundled guide with `gh autoaccount skill`. The skill command itself reads
+no authentication or account configuration and needs no setup. Direct binary
+invocation and the native literal management path support credential-free recovery;
+the native path still requires a trusted installed extension path and a valid real
+`gh` binary. Unmodified upstream `gh` may require login before dispatching the
+extension. Installation is explicit and does not change Git, shell, or account
+configuration.
+
+Automatic installation supports Linux and macOS only; on other platforms it fails
+before filesystem changes. Printing the guide is portable; on Windows it can be
+placed manually as `SKILL.md`, but automatic installation is not tested or supported.
+Choose a project-scoped destination:
+
+```bash
+# Project skill, for Codex and OpenCode:
+gh autoaccount skill install --dir .agents/skills
+# Project skill, for Claude Code:
+gh autoaccount skill install --dir .claude/skills
+# Project skill, OpenCode-native location:
+gh autoaccount skill install --dir .opencode/skills
+```
+
+For user-scoped installation, choose the parent for your agent instead:
+
+| Agent | Skills parent |
+|---|---|
+| Codex and OpenCode | `$HOME/.agents/skills` |
+| Claude Code and OpenCode | `$HOME/.claude/skills` |
+| OpenCode-native | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills` |
+
+For example, `gh autoaccount skill install --dir "$HOME/.agents/skills"` selects
+the user-scoped shared location. The command creates `gh-autoaccount/SKILL.md`
+under the chosen parent and creates missing parents on supported platforms. An
+identical regular file is a no-op; customized or non-regular destinations and symlinks at the managed child
+or final file are refused. The selected parent and its ancestors may be symlinks.
+There is no default destination or force overwrite. Review the destination before
+installation; your agent may need to refresh its skill list to discover it. See
+the [Codex](https://developers.openai.com/codex/skills),
+[Claude Code](https://code.claude.com/docs/en/skills), and
+[OpenCode](https://opencode.ai/v2/docs/skills/) skill documentation.
+
 ## Compatibility and safe migration
 
 The `~/.config/gh-autoprofile` storage and files, `GH_AUTOPROFILE_*` environment

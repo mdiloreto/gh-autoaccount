@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
+	"github.com/mdiloreto/gh-autoaccount/skills"
 )
 
 func TestShouldBypassAuthInjection(t *testing.T) {
@@ -198,6 +199,22 @@ func TestRealGHManagementAliasCannotBypassMissingCredential(t *testing.T) {
 	}
 	if err := os.Symlink(candidate, filepath.Join(extDir, "gh-autoaccount")); err != nil {
 		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"skill"}, skills.Content()},
+		{[]string{"skill", "--help"}, "Print the bundled agent skill"},
+		{[]string{"skill", "install", "--dir", filepath.Join(root, "skills")}, "Installed:"},
+	} {
+		out, errout, code := run(shim, append([]string{"autoaccount"}, tc.args...)...)
+		if code != 0 || (len(tc.args) == 1 && out != tc.want) || (len(tc.args) != 1 && !strings.Contains(out, tc.want)) {
+			t.Errorf("skill dispatch %v: stdout=%q stderr=%q exit=%d", tc.args, out, errout, code)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Errorf("management alias ran: %v", err)
+		}
 	}
 	if out, errout, code := run(realGH, "alias", "set", "aa", "autoaccount"); code != 0 {
 		t.Fatalf("short alias setup: exit=%d stdout=%q stderr=%q", code, out, errout)
