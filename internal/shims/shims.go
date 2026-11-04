@@ -219,20 +219,16 @@ func CheckPathBlockInstalled() bool {
 	if err != nil {
 		return false
 	}
-	files := []string{
-		filepath.Join(home, ".zshrc"),
-		filepath.Join(home, ".bashrc"),
-		filepath.Join(home, ".bash_profile"),
-		filepath.Join(home, ".profile"),
-	}
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(data), shimMarkerStart) {
+	for _, name := range []string{".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".bash_login", ".profile"} {
+		if HasPathBlock(filepath.Join(home, name)) {
 			return true
 		}
 	}
 	return false
+}
+
+// HasPathBlock reports whether the file contains the managed PATH block.
+func HasPathBlock(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), shimMarkerStart)
 }

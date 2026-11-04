@@ -83,12 +83,17 @@ all pins. All commands: `gh autoaccount --help`.
 - A **`gh` shim**, a symlink at `~/.local/bin/gh`. When it is first on PATH, plain
   `gh` resolves the pin for the current directory (or the repository owner) and
   injects that account's token into the real `gh` for that one command. No shell
-  hook or direnv is needed at runtime, so non-interactive shells are covered:
-  agents, editor tasks, cron and scripts. Setup refuses to replace an unmanaged
-  file at the shim path.
+  hook or direnv is needed at runtime. Setup puts the shim directory first on PATH
+  in your shell RC file and your login profile (`.zprofile`, or `.bash_profile` /
+  `.profile`), so interactive and login shells and everything started from them,
+  such as agents, editor tasks and scripts, are covered. Environments that start
+  with their own minimal PATH, such as cron jobs and systemd units, need
+  `~/.local/bin` added to PATH explicitly for plain `gh`. Setup refuses to replace
+  an unmanaged file at the shim path.
 - A **Git HTTPS credential helper**, which answers Git's credential requests from
   the pin registry for the exact host being accessed and fails closed if the
-  selected credential cannot be resolved.
+  selected credential cannot be resolved. Git finds it through your Git config, so
+  it works regardless of PATH, including in cron and systemd.
 
 Selection order is: `exec --user`, then the owner pin for the accessed repository,
 then the deepest directory pin, then the default. **An owner pin wins over a
