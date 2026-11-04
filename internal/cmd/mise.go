@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,6 +31,8 @@ func runMise(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), miseTimeout)
 	defer cancel()
 	c := exec.CommandContext(ctx, bin, args...)
+	// Bounds the wait when a child outlives mise and keeps its pipe open.
+	c.WaitDelay = time.Second
 	// A diagnostic probe inside a project directory must not install that
 	// project's tools, which would use the network.
 	c.Env = append(os.Environ(), "MISE_AUTO_INSTALL=0", "MISE_EXEC_AUTO_INSTALL=0")
@@ -58,11 +62,31 @@ func miseUnregister(dir string) error {
 	return err
 }
 
+// miseRegistered reads whether dir is currently in mise's global env._.path, so
+// rollback can restore exactly what was there rather than infer it. A missing
+// key is mise's way of saying the list is empty.
+func miseRegistered(dir string) (bool, error) {
+	out, err := runMise("config", "get", "-g", "env._.path")
+	if err != nil {
+		if strings.Contains(err.Error(), "Key not found") {
+			return false, nil
+		}
+		return false, err
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		return false, fmt.Errorf("cannot parse mise env._.path %q: %w", out, err)
+	}
+	return slices.Contains(entries, dir), nil
+}
+
 // applyMise reconciles the gh-only shim and its mise registration with the
 // requested state. Every mutation registers its undo through addUndo, so a later
-// setup failure restores what this step changed. A missing mise is a warning:
-// runSetup rejects it up front when the user asked for --mise explicitly.
-func applyMise(enable, wasEnabled bool, extensionBinary string, addUndo func(func() error)) (string, error) {
+// setup failure restores what this step changed. Undos that depend on mise are
+// registered before the call they undo, because the mise commands are idempotent
+// and a failing mise may still have written. A missing mise is a warning: runSetup
+// rejects it up front when the user asked for --mise explicitly.
+func applyMise(enable bool, extensionBinary string, addUndo func(func() error)) (string, error) {
 	dir, err := shims.MiseGHDir()
 	if err != nil {
 		return "", err
@@ -71,21 +95,27 @@ func applyMise(enable, wasEnabled bool, extensionBinary string, addUndo func(fun
 	if err != nil {
 		return "", err
 	}
-	_, lookErr := miseExecutable()
 	snapshot, err := snapshotSetupFile(path)
 	if err != nil {
 		return "", err
+	}
+	registered := false
+	_, lookErr := miseExecutable()
+	if lookErr == nil {
+		if registered, err = miseRegistered(dir); err != nil {
+			return "", fmt.Errorf("cannot read mise's global config: %w", err)
+		}
 	}
 
 	if !enable {
 		if lookErr != nil {
 			return "mise not found on PATH; remove the env._.path entry for " + dir + " from mise's global config if it exists", removeMiseShim(snapshot, addUndo)
 		}
+		if registered {
+			addUndo(func() error { return miseRegister(dir) })
+		}
 		if err := miseUnregister(dir); err != nil {
 			return "", fmt.Errorf("cannot unregister gh-only shim directory from mise: %w", err)
-		}
-		if wasEnabled {
-			addUndo(func() error { return miseRegister(dir) })
 		}
 		return "", removeMiseShim(snapshot, addUndo)
 	}
@@ -101,11 +131,11 @@ func applyMise(enable, wasEnabled bool, extensionBinary string, addUndo func(fun
 	if lookErr != nil {
 		return "mise not found on PATH; the gh-only shim was refreshed but mise's config was not checked", nil
 	}
+	if !registered {
+		addUndo(func() error { return miseUnregister(dir) })
+	}
 	if err := miseRegister(dir); err != nil {
 		return "", fmt.Errorf("cannot register gh-only shim directory with mise: %w", err)
-	}
-	if !wasEnabled {
-		addUndo(func() error { return miseUnregister(dir) })
 	}
 	return "", nil
 }
@@ -124,15 +154,23 @@ func removeMiseShim(snapshot setupFileSnapshot, addUndo func(func() error)) erro
 	return err
 }
 
+// underMise reports whether path lives in mise's installs or shims directories.
+func underMise(path string) bool {
+	if strings.Contains(path, "/mise/installs/") || strings.Contains(path, "/mise/shims/") {
+		return true
+	}
+	data := os.Getenv("MISE_DATA_DIR")
+	return data != "" && strings.HasPrefix(path, filepath.Clean(data)+string(filepath.Separator))
+}
+
 // shadowFixHint says how to make plain gh reach the managed shim, given what it
 // resolved to instead.
 func shadowFixHint(resolved string, settings config.Settings) string {
-	_, miseErr := miseExecutable()
 	switch {
 	case settings.Mise:
 		return "mise integration is enabled but not effective here; run: gh autoaccount setup --migrate, then start a new shell"
-	case miseErr == nil || strings.Contains(resolved, "/mise/"):
-		return "if mise manages gh, run: gh autoaccount setup --mise"
+	case underMise(resolved):
+		return "mise provides this gh; run: gh autoaccount setup --mise"
 	}
 	dir, err := shims.Dir()
 	if err != nil {

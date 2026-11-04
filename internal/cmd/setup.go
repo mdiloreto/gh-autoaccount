@@ -85,7 +85,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	if settings.Native && !shims.NativeGHSupported() {
 		return fmt.Errorf("native gh routing is unsupported on this platform")
 	}
-	wasMise, miseChanged := settings.Mise, cmd.Flags().Changed("mise")
+	miseChanged := cmd.Flags().Changed("mise")
 	if miseChanged {
 		settings.Mise, _ = cmd.Flags().GetBool("mise")
 	}
@@ -341,6 +341,27 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		return errors.Join(recordSnapshot.restore(), shimSnapshot.restore())
 	}
+	configureMise := func() error {
+		fmt.Print("  Configuring mise............ ")
+		warning, err := applyMise(settings.Mise, libraryBinary, func(undo func() error) { rollback = append(rollback, undo) })
+		if err != nil {
+			fmt.Println("FAILED")
+			return err
+		}
+		fmt.Println("OK")
+		if warning != "" {
+			fmt.Println("    " + warning)
+			allGood = false
+		}
+		return nil
+	}
+	// Disabling runs first: a legacy transition drops the ownership record that
+	// proves the gh-only shim is ours, and removal only touches an owned shim.
+	if miseChanged && !settings.Mise {
+		if err := configureMise(); err != nil {
+			return err
+		}
+	}
 	// Native mode requires both the proxy and Git helper before it is persisted.
 	if settings.Native {
 		binPath, err := resolveBinaryPath()
@@ -373,17 +394,9 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	if settings.Mise || miseChanged {
-		fmt.Print("  Configuring mise............ ")
-		warning, err := applyMise(settings.Mise, wasMise, libraryBinary, func(undo func() error) { rollback = append(rollback, undo) })
-		if err != nil {
-			fmt.Println("FAILED")
+	if settings.Mise {
+		if err := configureMise(); err != nil {
 			return err
-		}
-		fmt.Println("OK")
-		if warning != "" {
-			fmt.Println("    " + warning)
-			allGood = false
 		}
 	}
 

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -395,11 +394,9 @@ func ResolveGHPath() (string, error) {
 		return path, nil
 	}
 
-	var shimPaths []string
-	for _, locate := range []func() (string, error){shims.GHPath, shims.MiseGHPath} {
-		if path, err := locate(); err == nil {
-			shimPaths = append(shimPaths, path)
-		}
+	shimPath := ""
+	if path, err := shims.GHPath(); err == nil {
+		shimPath = path
 	}
 
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
@@ -407,7 +404,7 @@ func ResolveGHPath() (string, error) {
 			continue
 		}
 		candidate := filepath.Join(dir, "gh")
-		if slices.Contains(shimPaths, candidate) {
+		if shimPath != "" && candidate == shimPath {
 			continue
 		}
 		if !validGH(candidate) {
@@ -430,6 +427,11 @@ func validGH(path string) bool {
 			return false
 		}
 	} else {
+		return false
+	}
+	// The gh-only directory holds nothing but the shim, so even a stale link left
+	// by an older extension binary is never a real gh.
+	if shims.IsMiseGHPath(path) {
 		return false
 	}
 	if shim, err := shims.GHPath(); err == nil && shims.IsGHInstalled() {

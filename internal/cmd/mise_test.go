@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	direnvlib "github.com/mdiloreto/gh-autoaccount/internal/direnv"
@@ -16,12 +17,20 @@ import (
 // fakeMise logs its argv and edits a plain-text stand-in for mise's global
 // config, one registered directory per line.
 type fakeMise struct {
-	path, log, toml, fail string
+	path, log, toml, fail, failAfter string
 }
 
 const fakeMiseScript = `#!/bin/sh
 printf '%s\n' "$*" >> "$MISE_FAKE_LOG"
 if [ -e "$MISE_FAKE_FAIL" ]; then echo "fake mise failure" >&2; exit 1; fi
+case "$1 $2 $3 $4" in
+"config get -g env._.path")
+  if [ -s "$MISE_FAKE_TOML" ]; then
+    printf '['; sed 's/.*/"&"/' "$MISE_FAKE_TOML" | paste -sd, | tr -d '\n'; printf ']\n'
+    exit 0
+  fi
+  echo "mise ERROR Key not found: env._.path" >&2; exit 1 ;;
+esac
 case "$1 $2 $3 $4 $5" in
 "config set -g --append env._.path")
   grep -qxF -- "$6" "$MISE_FAKE_TOML" 2>/dev/null || printf '%s\n' "$6" >> "$MISE_FAKE_TOML" ;;
@@ -35,15 +44,18 @@ case "$1 $2 $3 $4 $5" in
   printf '%s\n' "$MISE_FAKE_EXEC_GH" ;;
 *) echo "unexpected mise invocation: $*" >&2; exit 2 ;;
 esac
+# A mise that wrote its config and then failed.
+if [ -e "$MISE_FAKE_FAIL_AFTER" ]; then echo "fake mise failure after write" >&2; exit 1; fi
 `
 
 func installFakeMise(t *testing.T, home string) *fakeMise {
 	t.Helper()
 	fm := &fakeMise{
-		path: filepath.Join(home, "fake-mise", "mise"),
-		log:  filepath.Join(home, "fake-mise", "argv.log"),
-		toml: filepath.Join(home, "fake-mise", "config.toml"),
-		fail: filepath.Join(home, "fake-mise", "fail"),
+		path:      filepath.Join(home, "fake-mise", "mise"),
+		log:       filepath.Join(home, "fake-mise", "argv.log"),
+		toml:      filepath.Join(home, "fake-mise", "config.toml"),
+		fail:      filepath.Join(home, "fake-mise", "fail"),
+		failAfter: filepath.Join(home, "fake-mise", "fail-after-write"),
 	}
 	if err := os.MkdirAll(filepath.Dir(fm.path), 0700); err != nil {
 		t.Fatal(err)
@@ -54,20 +66,30 @@ func installFakeMise(t *testing.T, home string) *fakeMise {
 	t.Setenv("MISE_FAKE_LOG", fm.log)
 	t.Setenv("MISE_FAKE_TOML", fm.toml)
 	t.Setenv("MISE_FAKE_FAIL", fm.fail)
+	t.Setenv("MISE_FAKE_FAIL_AFTER", fm.failAfter)
 	t.Setenv("MISE_FAKE_EXEC_GH", "")
 	miseExecutable = func() (string, error) { return fm.path, nil }
 	return fm
 }
 
-func (fm *fakeMise) failing(t *testing.T, on bool) {
+// touch makes one of the fake's failure switches active.
+func touch(t *testing.T, flag string) {
 	t.Helper()
-	if on {
-		if err := os.WriteFile(fm.fail, nil, 0600); err != nil {
-			t.Fatal(err)
-		}
-	} else if err := os.Remove(fm.fail); err != nil && !os.IsNotExist(err) {
+	if err := os.WriteFile(flag, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// calls returns the logged invocations other than read-only config lookups.
+func (fm *fakeMise) calls(t *testing.T) []string {
+	t.Helper()
+	var calls []string
+	for _, line := range fileLines(t, fm.log) {
+		if !strings.HasPrefix(line, "config get ") {
+			calls = append(calls, line)
+		}
+	}
+	return calls
 }
 
 func fileLines(t *testing.T, path string) []string {
@@ -149,7 +171,7 @@ func TestSetupMiseLifecycle(t *testing.T) {
 	if err != nil || len(entries) != 1 || entries[0].Name() != "gh" || !shims.IsMiseGHInstalled() || !shims.IsNativeGHInstalled() {
 		t.Fatalf("shims not installed (%v, %v)", entries, err)
 	}
-	if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register}) {
+	if got := fm.calls(t); !reflect.DeepEqual(got, []string{register}) {
 		t.Fatalf("enable argv: %q", got)
 	}
 	if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) {
@@ -159,7 +181,7 @@ func TestSetupMiseLifecycle(t *testing.T) {
 	// Migration and doctor --fix re-ensure, and the registration stays single.
 	runSetupArgs(t, "--migrate")
 	runDoctorFix(t)
-	if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register, register, register}) {
+	if got := fm.calls(t); !reflect.DeepEqual(got, []string{register, register, register}) {
 		t.Fatalf("re-ensure argv: %q", got)
 	}
 	if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) {
@@ -170,7 +192,7 @@ func TestSetupMiseLifecycle(t *testing.T) {
 	}
 
 	runSetupArgs(t, "--mise=false")
-	if got := fileLines(t, fm.log); len(got) != 4 || got[3] != unregister {
+	if got := fm.calls(t); len(got) != 4 || got[3] != unregister {
 		t.Fatalf("disable argv: %q", got)
 	}
 	if got := fileLines(t, fm.toml); len(got) != 0 {
@@ -183,7 +205,7 @@ func TestSetupMiseLifecycle(t *testing.T) {
 	// Without the persisted opt-in, migration must never enable it.
 	runSetupArgs(t, "--migrate")
 	runDoctorFix(t)
-	if got := fileLines(t, fm.log); len(got) != 4 {
+	if got := fm.calls(t); len(got) != 4 {
 		t.Fatalf("mise invoked without opt-in: %q", got)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -209,19 +231,55 @@ func TestSetupMiseRollback(t *testing.T) {
 		}
 	}
 
-	t.Run("registration fails", func(t *testing.T) {
+	t.Run("config read fails", func(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
-		fm.failing(t, true)
+		touch(t, fm.fail)
 		if err := runSetupArgsErr("--native", "--no-shell-rc", "--mise"); err == nil || !strings.Contains(err.Error(), "fake mise failure") {
 			t.Fatalf("expected the mise failure to surface: %v", err)
 		}
-		dir := miseDir(t)
-		if _, err := os.Stat(dir); !os.IsNotExist(err) || shims.IsNativeGHInstalled() || loadSettings(t).Mise || loadSettings(t).Native {
+		if _, err := os.Stat(miseDir(t)); !os.IsNotExist(err) || shims.IsNativeGHInstalled() || loadSettings(t).Mise || loadSettings(t).Native {
 			t.Fatalf("failed setup left state behind: %v", err)
 		}
-		if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register(dir)}) || len(fileLines(t, fm.toml)) != 0 {
+		if got := fm.calls(t); len(got) != 0 {
+			t.Fatalf("mise edited config after a failed read: %q", got)
+		}
+	})
+
+	// The mise command wrote its config and then failed: the entry must go.
+	t.Run("registration fails after writing", func(t *testing.T) {
+		home := onboardingHome(t)
+		fm := installFakeMise(t, home)
+		touch(t, fm.failAfter)
+		if err := runSetupArgsErr("--native", "--no-shell-rc", "--mise"); err == nil || !strings.Contains(err.Error(), "failure after write") {
+			t.Fatalf("expected the mise failure to surface: %v", err)
+		}
+		dir := miseDir(t)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) || shims.IsNativeGHInstalled() || loadSettings(t).Mise {
+			t.Fatalf("failed setup left state behind: %v", err)
+		}
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), unregister(dir)}) || len(fileLines(t, fm.toml)) != 0 {
 			t.Fatalf("argv %q, config %q", got, fileLines(t, fm.toml))
+		}
+	})
+
+	// Rollback restores what mise's config actually held, not what settings imply.
+	t.Run("entry present before setup survives rollback", func(t *testing.T) {
+		home := onboardingHome(t)
+		fm := installFakeMise(t, home)
+		dir := miseDir(t)
+		if err := os.MkdirAll(filepath.Dir(fm.toml), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fm.toml, []byte(dir+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		breakHook(t)
+		if err := runSetupArgsErr("--native", "--no-shell-rc", "--mise"); err == nil {
+			t.Fatal("expected hook failure")
+		}
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir)}) || !reflect.DeepEqual(fileLines(t, fm.toml), []string{dir}) {
+			t.Fatalf("pre-existing entry lost: %q, %q", got, fileLines(t, fm.toml))
 		}
 	})
 
@@ -233,7 +291,7 @@ func TestSetupMiseRollback(t *testing.T) {
 			t.Fatal("expected hook failure")
 		}
 		dir := miseDir(t)
-		if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register(dir), unregister(dir)}) {
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), unregister(dir)}) {
 			t.Fatalf("rollback argv: %q", got)
 		}
 		if _, err := os.Stat(dir); !os.IsNotExist(err) || len(fileLines(t, fm.toml)) != 0 || loadSettings(t).Mise || shims.IsNativeGHInstalled() {
@@ -250,7 +308,7 @@ func TestSetupMiseRollback(t *testing.T) {
 			t.Fatal("expected hook failure")
 		}
 		dir := miseDir(t)
-		if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register(dir), register(dir)}) {
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), register(dir)}) {
 			t.Fatalf("a pre-existing registration must survive rollback: %q", got)
 		}
 		if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) || !loadSettings(t).Mise || !shims.IsMiseGHInstalled() {
@@ -267,7 +325,7 @@ func TestSetupMiseRollback(t *testing.T) {
 			t.Fatal("expected hook failure")
 		}
 		dir := miseDir(t)
-		if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{register(dir), unregister(dir), register(dir)}) {
+		if got := fm.calls(t); !reflect.DeepEqual(got, []string{register(dir), unregister(dir), register(dir)}) {
 			t.Fatalf("disable rollback argv: %q", got)
 		}
 		if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) || !loadSettings(t).Mise || !shims.IsMiseGHInstalled() {
@@ -285,7 +343,7 @@ func TestSetupMiseRequiresNativeAndMise(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "requires native routing") {
 			t.Fatalf("expected native requirement error: %v", err)
 		}
-		if len(fileLines(t, fm.log)) != 0 || loadSettings(t).Mise {
+		if len(fm.calls(t)) != 0 || loadSettings(t).Mise {
 			t.Fatal("mise touched without native routing")
 		}
 	})
@@ -293,12 +351,12 @@ func TestSetupMiseRequiresNativeAndMise(t *testing.T) {
 		home := onboardingHome(t)
 		fm := installFakeMise(t, home)
 		runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
-		before := fileLines(t, fm.log)
+		before := fm.calls(t)
 		err := runSetupArgsErr("--native=false")
 		if err == nil || !strings.Contains(err.Error(), "--mise=false") {
 			t.Fatalf("expected guidance to disable mise first: %v", err)
 		}
-		if settings := loadSettings(t); !settings.Native || !settings.Mise || !shims.IsMiseGHInstalled() || !reflect.DeepEqual(before, fileLines(t, fm.log)) {
+		if settings := loadSettings(t); !settings.Native || !settings.Mise || !shims.IsMiseGHInstalled() || !reflect.DeepEqual(before, fm.calls(t)) {
 			t.Fatalf("refused transition changed state: %+v", settings)
 		}
 	})
@@ -335,7 +393,7 @@ func TestSetupMiseRefusesUnmanagedShimPath(t *testing.T) {
 	if data, err := os.ReadFile(path); err != nil || string(data) != content {
 		t.Fatalf("unmanaged file changed: %q, %v", data, err)
 	}
-	if len(fileLines(t, fm.log)) != 0 || shims.IsNativeGHInstalled() {
+	if len(fm.calls(t)) != 0 || shims.IsNativeGHInstalled() {
 		t.Fatal("setup mutated state before refusing")
 	}
 	// Disabling must not delete a file this tool does not own either.
@@ -439,7 +497,7 @@ func TestCheckGHOnPathCountsIssues(t *testing.T) {
 	if verified, issues, out := check(); !verified || issues != 0 || !strings.Contains(out, "OK   gh inside mise exec resolves to the managed shim") {
 		t.Fatalf("healthy: %t %d\n%s", verified, issues, out)
 	}
-	if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{"exec -- sh -c command -v gh"}) {
+	if got := fm.calls(t); !reflect.DeepEqual(got, []string{"exec -- sh -c command -v gh"}) {
 		t.Fatalf("mise exec must run once: %q", got)
 	}
 
@@ -453,7 +511,7 @@ func TestCheckGHOnPathCountsIssues(t *testing.T) {
 		t.Fatalf("both checks should count: %d", issues)
 	}
 
-	fm.failing(t, true)
+	touch(t, fm.fail)
 	if _, issues, out := check(); issues != 1 || !strings.Contains(out, "INFO cannot check gh inside mise exec") {
 		t.Fatalf("a failing mise exec is not a verdict: %d\n%s", issues, out)
 	}
@@ -528,8 +586,8 @@ func TestStatusReportsShadowedShim(t *testing.T) {
 }
 
 // TestRealMiseRegistersGHOnlyDirFirst drives the real mise binary against a
-// throwaway global config. It has no [tools] and mise runs offline, so nothing
-// is installed or fetched.
+// throwaway global config. Its only tool is a locally linked gh, standing in for
+// mise's own gh, and mise runs offline, so nothing is installed or fetched.
 func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	requireNative(t)
 	realMise, err := exec.LookPath("mise")
@@ -543,7 +601,7 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configFile), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configFile, nil, 0600); err != nil {
+	if err := os.WriteFile(configFile, []byte("[tools]\ngh = \"9.9.9\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for key, value := range map[string]string{
@@ -564,8 +622,19 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	miseExecutable = func() (string, error) { return realMise, nil }
 	dir := miseDir(t)
 
-	// The decoy gh that onboardingHome put first on PATH is what mise must beat.
-	decoy := filepath.Join(home, "bin", "gh")
+	// Mise puts its tools' bin directories ahead of PATH, which is the shadowing
+	// the gh-only directory has to beat; link a gh there without installing.
+	linked := filepath.Join(sandbox, "linked-gh")
+	if err := os.MkdirAll(filepath.Join(linked, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, "bin", "gh"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runMise("link", "gh@9.9.9", linked); err != nil {
+		t.Fatal(err)
+	}
+	toolGH := filepath.Join(sandbox, "data", "installs", "gh", "9.9.9", "bin", "gh")
 	resolve := func() string {
 		out, err := runMise("exec", "--", "sh", "-c", "command -v gh")
 		if err != nil {
@@ -573,8 +642,8 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 		}
 		return out
 	}
-	if got := resolve(); got != decoy {
-		t.Fatalf("baseline gh should be the decoy %s, got %s", decoy, got)
+	if got := resolve(); got != toolGH {
+		t.Fatalf("baseline gh should be mise's tool %s, got %s", toolGH, got)
 	}
 
 	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
@@ -591,7 +660,88 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	if data, err := os.ReadFile(configFile); err != nil || strings.Contains(string(data), dir) {
 		t.Fatalf("registration not removed: %v\n%s", err, data)
 	}
-	if got := resolve(); got != decoy {
-		t.Fatalf("gh still shadowed after disabling: %s", got)
+	if got := resolve(); got != toolGH {
+		t.Fatalf("mise's gh not restored after disabling: %s", got)
+	}
+}
+
+func TestSetupDisableMiseAndLegacyInOneCommand(t *testing.T) {
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
+	dir := miseDir(t)
+	runSetupArgs(t, "--native=false", "--mise=false")
+	if settings := loadSettings(t); settings.Native || settings.Mise {
+		t.Fatalf("settings: %+v", settings)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "gh")); !os.IsNotExist(err) {
+		t.Fatalf("gh-only shim orphaned by the legacy transition: %v", err)
+	}
+	if got := fileLines(t, fm.toml); len(got) != 0 {
+		t.Fatalf("registration left behind: %q", got)
+	}
+}
+
+func TestSetupMiseRefusesImpureDirectory(t *testing.T) {
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	dir := miseDir(t)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "git")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	err := runSetupArgsErr("--native", "--no-shell-rc", "--mise")
+	if err == nil || !strings.Contains(err.Error(), "gh-only directory") || !strings.Contains(err.Error(), `"git"`) {
+		t.Fatalf("expected the foreign entry to be refused: %v", err)
+	}
+	if len(fm.calls(t)) != 0 || shims.IsNativeGHInstalled() || loadSettings(t).Mise {
+		t.Fatal("setup mutated state before refusing")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("foreign file touched: %v", err)
+	}
+}
+
+func TestShadowFixHintOnlyBlamesMiseForMisePaths(t *testing.T) {
+	home := onboardingHome(t)
+	installFakeMise(t, home) // mise is on PATH, which alone must not trigger the hint
+	settings := config.Settings{Native: true}
+	other := filepath.Join(home, "elsewhere", "gh")
+	if hint := shadowFixHint(other, settings); strings.Contains(hint, "--mise") || !strings.Contains(hint, "on PATH") {
+		t.Fatalf("non-mise path got %q", hint)
+	}
+	for _, path := range []string{
+		"/home/u/.local/share/mise/installs/gh/1/bin/gh",
+		"/home/u/.local/share/mise/shims/gh",
+	} {
+		if hint := shadowFixHint(path, settings); !strings.Contains(hint, "setup --mise") {
+			t.Fatalf("%s got %q", path, hint)
+		}
+	}
+	t.Setenv("MISE_DATA_DIR", filepath.Join(home, "custom-data"))
+	if hint := shadowFixHint(filepath.Join(home, "custom-data", "installs", "gh", "gh"), settings); !strings.Contains(hint, "setup --mise") {
+		t.Fatalf("MISE_DATA_DIR path got %q", hint)
+	}
+	if hint := shadowFixHint(other, config.Settings{Native: true, Mise: true}); !strings.Contains(hint, "setup --migrate") {
+		t.Fatalf("enabled mise got %q", hint)
+	}
+}
+
+func TestRunMiseIsBoundedWhenAChildHoldsThePipe(t *testing.T) {
+	home := onboardingHome(t)
+	script := filepath.Join(home, "mise-lingering")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 8 &\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	miseExecutable = func() (string, error) { return script, nil }
+	start := time.Now()
+	_, _ = runMise("exec")
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("runMise waited %s for a lingering child", elapsed)
 	}
 }

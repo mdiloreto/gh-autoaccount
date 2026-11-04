@@ -271,3 +271,35 @@ func TestRemoveMiseGHRemovesManagedShimAndEmptyDirs(t *testing.T) {
 		t.Fatalf("second remove: %v, %v", removed, err)
 	}
 }
+
+func TestMiseGHRefusesDirectoryWithOtherEntries(t *testing.T) {
+	if !NativeGHSupported() {
+		t.Skip("native unsupported")
+	}
+	home := miseShimHome(t)
+	ext := filepath.Join(home, "extension")
+	writeExtension(t, ext)
+	dir, _ := MiseGHDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A leftover install temp directory is not a command and is tolerated.
+	if err := os.Mkdir(filepath.Join(dir, ".gh-autoprofile-leftover"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMiseGHReplaceable(); err != nil {
+		t.Fatalf("temp leftover refused: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMiseGHReplaceable(); err == nil {
+		t.Fatal("foreign entry accepted")
+	}
+	if _, err := InstallMiseGH(ext); err == nil {
+		t.Fatal("installed into an impure directory")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "gh")); !os.IsNotExist(err) {
+		t.Fatalf("shim created despite refusal: %v", err)
+	}
+}

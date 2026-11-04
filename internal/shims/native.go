@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 )
@@ -103,13 +104,58 @@ func MiseGHPath() (string, error) {
 	return filepath.Join(dir, "gh"), nil
 }
 
-// CheckMiseGHReplaceable rejects an unmanaged path before setup mutates anything.
+// CheckMiseGHReplaceable rejects an unmanaged shim path, or a directory that
+// holds anything besides the shim, before setup mutates anything.
 func CheckMiseGHReplaceable() error {
 	path, err := MiseGHPath()
 	if err != nil {
 		return err
 	}
+	if err := checkMiseGHDirPure(filepath.Dir(path)); err != nil {
+		return err
+	}
 	return ensureManagedOrMissing(path)
+}
+
+// checkMiseGHDirPure enforces that the whole directory can safely sit ahead of
+// mise's tools. Install's transient temp directories are not commands, so a
+// leftover from an interrupted run is tolerated.
+func checkMiseGHDirPure(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect gh-only directory: %w", err)
+	}
+	for _, entry := range entries {
+		if name := entry.Name(); name != "gh" && !strings.HasPrefix(name, ".gh-autoprofile-") {
+			return fmt.Errorf("refusing to use %s as the gh-only directory: it also contains %q", dir, name)
+		}
+	}
+	return nil
+}
+
+// IsMiseGHPath reports whether path is, or resolves to, the gh-only shim
+// location, whether or not the link is still owned. Nothing else belongs there,
+// so a stale link must never be taken for a real gh.
+func IsMiseGHPath(path string) bool {
+	shim, err := MiseGHPath()
+	if err != nil {
+		return false
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		if shimDir, err := filepath.EvalSymlinks(filepath.Dir(shim)); err == nil &&
+			filepath.Join(dir, filepath.Base(path)) == filepath.Join(shimDir, filepath.Base(shim)) {
+			return true
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	shimInfo, err := os.Stat(shim)
+	return err == nil && os.SameFile(info, shimInfo)
 }
 
 // IsMiseGHInstalled reports whether the gh-only shim is a managed, working link.
@@ -123,6 +169,9 @@ func IsMiseGHInstalled() bool {
 func InstallMiseGH(extensionBinaryPath string) (string, error) {
 	path, err := MiseGHPath()
 	if err != nil {
+		return "", err
+	}
+	if err := checkMiseGHDirPure(filepath.Dir(path)); err != nil {
 		return "", err
 	}
 	return installNativeLink(path, extensionBinaryPath)

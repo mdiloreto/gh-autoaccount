@@ -263,9 +263,14 @@ and adds that directory to `env._.path` in mise's global config via
 `mise config set -g --append env._.path <dir>`; mise puts those entries before its tool
 paths without reordering other tools. It is persisted, so `setup --migrate` and
 `doctor --fix` re-apply it. Undo it with `gh autoaccount setup --mise=false`, which
-removes that one entry and the shim. The shim still runs the first other `gh` on the
-PATH it was started with, so the version mise selects, including a project pin, keeps
-applying.
+removes that one entry and the shim; if `mise` is not on PATH at that point it only
+warns and leaves the entry in mise's config for you to remove. The shim still runs the
+first other `gh` on the PATH it was started with, so the version mise selects,
+including a project pin, keeps applying. An explicit `GH_PATH` or
+`GH_AUTOPROFILE_REAL_GH` overrides that choice.
+
+`setup --mise` needs an existing global mise config that mise trusts. If it fails
+with "not trusted", create the config or run `mise trust`, then retry.
 
 ### Wrapper mode (legacy, deprecated)
 
