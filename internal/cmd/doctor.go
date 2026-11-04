@@ -154,12 +154,32 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if settings.ExternalShell {
-		fmt.Println("INFO external PATH integration not verified")
-	} else if shims.CheckPathConfigured() {
-		fmt.Println("OK   shim PATH block configured")
-	} else {
-		fmt.Println("INFO shim PATH block not configured")
+	if settings.Mise {
+		if shims.IsMiseGHInstalled() {
+			fmt.Println("OK   mise gh-only shim installed")
+		} else {
+			fmt.Println("WARN mise gh-only shim missing, broken, or unmanaged")
+			issues++
+		}
+		if dir, err := shims.MiseGHDir(); err == nil {
+			fmt.Printf("     path: %s\n", dir)
+		}
+	}
+
+	pathVerified := false
+	if settings.Native && shims.NativeGHSupported() && shims.IsNativeGHInstalled() {
+		var pathIssues int
+		pathVerified, pathIssues = checkGHOnPath(settings)
+		issues += pathIssues
+	}
+	if !pathVerified {
+		if settings.ExternalShell {
+			fmt.Println("INFO external PATH integration not verified")
+		} else if shims.CheckPathConfigured() {
+			fmt.Println("OK   shim PATH block configured")
+		} else {
+			fmt.Println("INFO shim PATH block not configured")
+		}
 	}
 
 	helperPath, helperErr := gitcred.HelperPath()

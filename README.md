@@ -246,6 +246,27 @@ can complete without direnv, but legacy wrappers and export need direnv to activ
 If you restore an existing `pins.yml` on a new machine, run
 `gh autoaccount setup --native`; an existing registry keeps legacy routing.
 
+#### Using with mise
+
+If mise manages `gh` (for example `gh = "latest"`), `mise activate` puts mise's tool
+directories ahead of `~/.local/bin` on each prompt, so plain `gh` runs mise's binary
+and bypasses the managed shim. `doctor` and `status` warn when `gh` does not resolve
+to a managed shim. Fix it with:
+
+```bash
+gh autoaccount setup --mise    # requires native routing and mise on PATH
+```
+
+This installs a second shim in a directory that holds only `gh`
+(`$XDG_DATA_HOME/gh-autoaccount/bin`, default `~/.local/share/gh-autoaccount/bin`)
+and adds that directory to `env._.path` in mise's global config via
+`mise config set -g --append env._.path <dir>`; mise puts those entries before its tool
+paths without reordering other tools. It is persisted, so `setup --migrate` and
+`doctor --fix` re-apply it. Undo it with `gh autoaccount setup --mise=false`, which
+removes that one entry and the shim. The shim still runs the first other `gh` on the
+PATH it was started with, so the version mise selects, including a project pin, keeps
+applying.
+
 ### Wrapper mode (legacy, deprecated)
 
 Deprecated: it misses non-interactive shells such as agents, editor tasks and cron.
