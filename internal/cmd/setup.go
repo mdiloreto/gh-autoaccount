@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
@@ -83,6 +84,9 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	miseChanged := cmd.Flags().Changed("mise")
 	if miseChanged {
 		settings.Mise, _ = cmd.Flags().GetBool("mise")
+	}
+	if settings.Mise && runtime.GOOS == "windows" {
+		return fmt.Errorf("mise integration is not supported on Windows")
 	}
 	if settings.Mise {
 		if miseChanged {
@@ -273,6 +277,10 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	if settings.ExternalShell {
 		fmt.Println("EXTERNAL (RC and PATH unchanged; integration not verified)")
 		fmt.Printf("    Ensure your externally managed PATH puts %s before any other gh.\n", shimDir)
+	} else if runtime.GOOS == "windows" {
+		if !configureWindowsPath(shimDir, &rollback) {
+			allGood = false
+		}
 	} else if rcPath, err = detectShellRC(); err != nil {
 		fmt.Println("SKIPPED")
 		fmt.Printf("    %v\n", err)
@@ -355,6 +363,8 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		fmt.Println("  External shell integration is not verified; reload it through your shell manager.")
 	} else if rcPath != "" {
 		fmt.Println("  Restart your shell or run: source " + rcPath)
+	} else if runtime.GOOS == "windows" {
+		fmt.Println("  Open a new terminal to pick up the PATH change.")
 	}
 
 	if alias, _ := cmd.Flags().GetBool("alias"); alias {
@@ -367,6 +377,38 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 	return nil
+}
+
+// configureWindowsPath puts the shim directory first on the persistent user
+// PATH. Windows searches the machine PATH before the user PATH, so a gh
+// installed for all users still comes first; that needs an administrator.
+func configureWindowsPath(shimDir string, rollback *[]func() error) bool {
+	restore, changed, err := shims.PrependUserPath(shimDir)
+	if err != nil {
+		fmt.Println("FAILED")
+		fmt.Printf("    Cannot update the user PATH: %v\n", err)
+		return false
+	}
+	if changed {
+		*rollback = append(*rollback, restore)
+	}
+	fmt.Println("OK (user PATH)")
+	gh, err := shims.NewProcessGH()
+	if err != nil || config.SamePath(filepath.Clean(filepath.Dir(gh)), filepath.Clean(shimDir)) {
+		return true
+	}
+	fmt.Printf("    WARN: new shells find %s first, because Windows searches the machine PATH before the user PATH.\n", gh)
+	fmt.Println("    Plain gh is not routed until an administrator puts the shim directory first on the machine PATH:")
+	fmt.Printf("      %s\n", machinePathCommand(shimDir))
+	fmt.Println("    Git HTTPS routing works either way.")
+	return false
+}
+
+// machinePathCommand is the PowerShell command, run as administrator, that puts
+// dir first on the machine PATH.
+func machinePathCommand(dir string) string {
+	quoted := "'" + strings.ReplaceAll(dir, "'", "''") + ";'"
+	return "[Environment]::SetEnvironmentVariable('Path', " + quoted + " + [Environment]::GetEnvironmentVariable('Path', 'Machine'), 'Machine')"
 }
 
 // shimDirWinsForGH reports whether plain gh already resolves inside the shim
@@ -482,12 +524,13 @@ func runMigration() (migrationReport, error) {
 	}
 
 	configDir, err := config.ConfigDir()
-	if err == nil {
+	// Windows has no POSIX mode bits to repair; chmod there only toggles read-only.
+	if err == nil && runtime.GOOS != "windows" {
 		if chmodErr := os.Chmod(configDir, 0700); chmodErr != nil {
 			report.PermRepairsFailed = append(report.PermRepairsFailed, fmt.Sprintf("%s (want 0700): %v", configDir, chmodErr))
 		}
 	}
-	if pinsPath, err := config.PinsFilePath(); err == nil {
+	if pinsPath, err := config.PinsFilePath(); err == nil && runtime.GOOS != "windows" {
 		if _, statErr := os.Stat(pinsPath); statErr == nil {
 			if chmodErr := os.Chmod(pinsPath, 0600); chmodErr != nil {
 				report.PermRepairsFailed = append(report.PermRepairsFailed, fmt.Sprintf("%s (want 0600): %v", pinsPath, chmodErr))

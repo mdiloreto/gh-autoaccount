@@ -59,7 +59,7 @@ func Install(extensionBinaryPath, realGH string) (string, error) {
 	content := fmt.Sprintf(`#!/bin/sh
 # gh-autoprofile-git-credential-helper
 GH_PATH=%s GH_AUTOPROFILE_REAL_GH=%s exec %s __git-credential "$@"
-`, shellQuote(realGH), shellQuote(realGH), shellQuote(extensionBinaryPath))
+`, shellPath(realGH), shellPath(realGH), shellPath(extensionBinaryPath))
 	if err := config.WriteAtomicMode(helperPath, []byte(content), 0755); err != nil {
 		return "", fmt.Errorf("cannot write git credential helper: %w", err)
 	}
@@ -365,7 +365,13 @@ func CheckUseHTTPPathHost(host string) bool {
 }
 
 func primaryHelper(path string) string {
-	return "!" + shellQuote(path)
+	return "!" + shellPath(path)
+}
+
+// shellPath quotes a path for the POSIX shell Git runs helpers in. Git for
+// Windows uses its own sh, where forward slashes are the reliable spelling.
+func shellPath(path string) string {
+	return shellQuote(filepath.ToSlash(path))
 }
 
 func shellQuote(value string) string {

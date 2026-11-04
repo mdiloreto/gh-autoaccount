@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
 	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
 	"github.com/spf13/cobra"
@@ -66,26 +67,46 @@ func shouldBypassAuthInjection(args []string) bool {
 }
 
 func managementExtensionPath() (string, error) {
-	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("management extension dispatch is unavailable on Windows")
+	data, err := ghDataDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot locate gh extension: %w", err)
 	}
-	data := os.Getenv("XDG_DATA_HOME")
-	if data == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot locate gh extension directory: %w", err)
-		}
-		if !filepath.IsAbs(home) {
-			return "", fmt.Errorf("cannot locate gh extension: HOME must be an absolute path")
-		}
-		data = filepath.Join(home, ".local", "share")
-	} else if !filepath.IsAbs(data) {
-		return "", fmt.Errorf("cannot locate gh extension: XDG_DATA_HOME must be an absolute path")
-	}
-	target := filepath.Join(data, "gh", "extensions", "gh-autoaccount", "gh-autoaccount")
+	target := filepath.Join(data, "extensions", "gh-autoaccount", config.ExeName("gh-autoaccount"))
 	info, err := os.Stat(target)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+	if err != nil || !config.IsExecutable(info) {
 		return "", fmt.Errorf("gh-autoaccount extension is not installed or executable at %s; install or repair the extension", target)
 	}
 	return target, nil
+}
+
+// ghDataDir mirrors gh's own data directory lookup, which is where gh
+// installs extensions.
+func ghDataDir() (string, error) {
+	for _, key := range []string{"GH_DATA_DIR", "XDG_DATA_HOME"} {
+		dir := os.Getenv(key)
+		if dir == "" {
+			continue
+		}
+		if !filepath.IsAbs(dir) {
+			return "", fmt.Errorf("%s must be an absolute path", key)
+		}
+		if key == "XDG_DATA_HOME" {
+			dir = filepath.Join(dir, "gh")
+		}
+		return dir, nil
+	}
+	if local := os.Getenv("LOCALAPPDATA"); runtime.GOOS == "windows" && local != "" {
+		if !filepath.IsAbs(local) {
+			return "", fmt.Errorf("LOCALAPPDATA must be an absolute path")
+		}
+		return filepath.Join(local, "GitHub CLI"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("HOME must be an absolute path")
+	}
+	return filepath.Join(home, ".local", "share", "gh"), nil
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -219,6 +220,17 @@ func checkGHOnPath(settings config.Settings) (verified bool, issues int) {
 		fmt.Printf("WARN plain gh resolves to %s, not the managed shim\n", resolved)
 		fmt.Println("     " + shadowFixHint(resolved, settings))
 		issues++
+	}
+	if runtime.GOOS == "windows" {
+		// This process may predate a PATH change; new shells read the registry.
+		if gh, err := shims.NewProcessGH(); err == nil && !shims.IsManagedGHShim(gh) {
+			fmt.Printf("WARN new shells find %s first: Windows searches the machine PATH before the user PATH\n", gh)
+			if dir, err := shims.Dir(); err == nil {
+				fmt.Println("     as administrator, run: " + machinePathCommand(dir))
+			}
+			issues++
+		}
+		return true, issues
 	}
 	if _, err := miseExecutable(); err != nil {
 		return true, issues
