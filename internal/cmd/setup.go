@@ -25,21 +25,22 @@ func NewSetupCmd() *cobra.Command {
 		Long: `Checks that gh CLI (>= 2.40.0) is installed, then installs:
 
   1. The direnv shell library (use_gh_autoprofile / use_gh_autoprofile_export)
-  2. The shell hook (legacy per-command wrappers or native wrapper cleanup)
-  3. Optionally, a PATH-level gh shim for non-interactive shells
-  4. Optionally, a GitHub HTTPS credential helper that respects pinned directories
-  5. Optionally, Git-native path-scoped identity (--git-identity)
+  2. The shell hook (native wrapper cleanup, or deprecated legacy wrappers)
+  3. For native routing, a PATH-level gh proxy and GitHub HTTPS credential helper
+  4. Optionally, Git-native path-scoped identity (--git-identity)
 
 Use --no-shell-rc for externally managed shell integration. This preference is
 persisted: future setup, --migrate, and doctor --fix leave RC and PATH untouched.
 Use --no-shell-rc=false to return to automatic RC integration.
 
-Use --native on Linux or macOS for registry-based gh routing and the required
-Git HTTPS credential helper without shell wrappers. Direnv is optional for
-native routing but remains required for export workflows. Use --native=false
-to restore legacy gh and hook routing; the configured Git helper and identity
-settings remain in place. Git identity remains separately opt-in.
-Legacy setup requires direnv.
+Native routing is the default on Linux and macOS for a fresh install: registry-
+based gh routing and the required Git HTTPS credential helper, without shell
+wrappers, so non-interactive shells (agents, editor tasks, cron) are covered.
+Direnv is optional for native routing but remains required for export workflows.
+An existing legacy installation keeps legacy routing, which is deprecated, until
+you run setup --native. Use --native=false to select legacy gh and hook routing
+explicitly; the configured Git helper and identity settings remain in place.
+Git identity remains separately opt-in. Legacy setup requires direnv.
 
 Run this once after installing gh-autoaccount.
 
@@ -52,7 +53,7 @@ repair permissions, and update existing pins to the latest defaults.`,
 	cmd.Flags().Bool("credential-helper", false, "Configure git credential helper for non-interactive auth (systemd, cron, scripts)")
 	cmd.Flags().Bool("no-shell-rc", false, "Persist external shell integration; do not edit shell RC or PATH")
 	cmd.Flags().Bool("git-identity", false, "Enable managed Git includeIf identity from pins (persists across migration)")
-	cmd.Flags().Bool("native", false, "Use native gh routing and Git helper; false retains the helper")
+	cmd.Flags().Bool("native", false, "Use native gh routing and Git helper (default for a fresh install); false selects deprecated legacy routing and retains the helper")
 	cmd.Flags().Bool("alias", false, "Optionally configure the non-clobbering gh aa alias")
 	return cmd
 }
@@ -73,6 +74,11 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	previousNative := settings.Native
 	if cmd.Flags().Changed("native") {
 		settings.Native, _ = cmd.Flags().GetBool("native")
+	} else if !settings.Native && nativeGHSupported() && freshInstall() {
+		settings.Native = true
+	}
+	if notice := legacyNotice(); !settings.Native && notice != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "gh-autoaccount: "+notice)
 	}
 	if settings.Native && !shims.NativeGHSupported() {
 		return fmt.Errorf("native gh routing is unsupported on this platform")
@@ -515,8 +521,8 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Println("    export             — requires direnv; GH_TOKEN exported (use --export-token flag)")
 			fmt.Println("    Git identity       — separately opt-in with --git-identity")
 		} else {
-			fmt.Println("    wrapper (default)  — token injected per-command, never in env")
-			fmt.Println("    export             — GH_TOKEN exported (use --export-token flag)")
+			fmt.Println("    wrapper            — deprecated; token injected per-command, never in env")
+			fmt.Println("    export             — deprecated; GH_TOKEN exported (use --export-token flag)")
 			if cmd.Flags().Changed("native") {
 				fmt.Println("    Git helper and managed identity settings are retained; the helper still routes HTTPS credentials via pins.")
 			}
@@ -569,6 +575,39 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 	return nil
+}
+
+// legacyDeprecation is shown wherever legacy (non-native) routing is active.
+const legacyDeprecation = "legacy wrapper routing is deprecated: it does not cover non-interactive shells (agents, editor tasks, cron). Run `gh autoaccount setup --native` to migrate."
+
+// nativeGHSupported is a seam for tests; legacy is the only mode where false.
+var nativeGHSupported = shims.NativeGHSupported
+
+// legacyNotice is empty where native routing is unavailable, so users are not
+// told to run a command that cannot succeed.
+func legacyNotice() string {
+	if !nativeGHSupported() {
+		return ""
+	}
+	return legacyDeprecation
+}
+
+// freshInstall reports whether no gh-autoaccount integration exists yet, so a
+// default can be chosen without changing an existing installation. Uncertainty
+// counts as installed: an unreadable path must never flip a legacy setup.
+// settings.yml is not consulted because `default` can create it before setup.
+func freshInstall() bool {
+	for _, locate := range []func() (string, error){config.PinsFilePath, direnvlib.ShellHookPath, direnvlib.ShellLibPath} {
+		path, err := locate()
+		if err != nil {
+			return false
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			return false
+		}
+	}
+	return !shims.IsGHInstalled() && !shims.IsNativeGHInstalled() && !gitcred.IsInstalled() &&
+		!direnvlib.CheckShellHookInstalled() && !shims.CheckPathBlockInstalled()
 }
 
 type setupFileSnapshot struct {

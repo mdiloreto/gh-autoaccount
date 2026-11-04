@@ -38,7 +38,9 @@ git var GIT_AUTHOR_IDENT               # inspect inside a Git repository
 
 ## Native onboarding
 
-With accounts already logged in, run `gh autoaccount setup --native`, optionally
+With accounts already logged in, run `gh autoaccount setup` (native routing is the
+default for a fresh install; existing legacy installs migrate with
+`gh autoaccount setup --native`), optionally
 enable `setup --git-identity`, configure a default and pin a directory as shown
 below. Restart the shell or apply the PATH instructions. Native wrapper-mode pins
 do not require direnv or `.envrc`; export and legacy integration still do. A
@@ -49,8 +51,8 @@ clears it, including when recovering from a missing stored credential.
 
 You need GitHub CLI 2.40 or later, authenticated accounts, Git, and Bash or zsh on
 Linux/macOS. Native routing does not require direnv or an `.envrc` for a fresh
-setup; legacy and export workflows do. Windows binaries do not imply complete
-Windows shell integration.
+setup; deprecated legacy and export workflows do. Windows binaries do not imply
+complete Windows shell integration.
 
 ```bash
 gh extension install mdiloreto/gh-autoaccount
@@ -85,7 +87,7 @@ Setup changes local files and optionally shell and Git configuration; review and
 approve these changes separately from downloading a binary. In a fresh shell:
 
 ```bash
-gh autoaccount setup --native
+gh autoaccount setup
 gh autoaccount setup --git-identity  # optional Git identity integration
 gh autoaccount default alice
 gh autoaccount pin bob --dir ~/work-project --git-email bob@example.test
@@ -97,8 +99,10 @@ Restart the shell or apply the setup instructions for PATH. Native setup install
 managed `gh` shim and Git HTTPS credential helper and refuses to replace unmanaged
 shim paths. `--no-shell-rc` leaves shell integration to the caller. Native wrapper
 pins use the registry without direnv or `.envrc`; export mode and legacy routing
-still need direnv. `setup --native=false` returns to legacy routing, retaining Git
-helper and identity configuration. Setup refreshes generated runtime paths; it does
+still need direnv. A fresh `setup` selects native routing; an existing legacy
+installation keeps legacy routing until you run `setup --native`. `setup
+--native=false` selects deprecated legacy routing, retaining Git helper and
+identity configuration. Setup refreshes generated runtime paths; it does
 not itself rename an installed extension. Review and approve actual installation
 and shell RC or Git configuration migration separately.
 
@@ -217,10 +221,10 @@ the selected token into the arbitrary child and descendants. Export mode uses
 direnv to expose tokens to the shell and children for third-party tools. None of
 these is a sandbox against malicious commands or same-user processes.
 
-### Native routing (primary, opt-in on Linux and macOS)
+### Native routing (default on Linux and macOS)
 
 ```bash
-gh autoaccount setup --native
+gh autoaccount setup            # fresh install; existing legacy installs: setup --native
 gh autoaccount setup --git-identity  # separate opt-in for author/committer identity
 ```
 
@@ -233,13 +237,19 @@ and hook for existing workflows. Export mode and environment-based Git identity
 still require direnv; `--git-identity` separately enables Git's `includeIf`
 integration. Windows retains legacy integration.
 
-Run `gh autoaccount setup --native=false` to restore legacy shim and wrappers,
+Run `gh autoaccount setup --native=false` to restore the deprecated legacy shim and wrappers,
 then reload the hook or restart the shell. This retains configured Git helper and
 identity settings; the helper continues routing Git HTTPS through pins. The switch
 can complete without direnv, but legacy wrappers and export need direnv to activate.
 `setup --migrate` and `doctor --fix` preserve the selected routing mode.
 
-### Wrapper mode (default)
+If you restore an existing `pins.yml` on a new machine, run
+`gh autoaccount setup --native`; an existing registry keeps legacy routing.
+
+### Wrapper mode (legacy, deprecated)
+
+Deprecated: it misses non-interactive shells such as agents, editor tasks and cron.
+Migrate with `gh autoaccount setup --native`; `doctor` and `status` report it.
 
 1. Legacy direnv exports only non-sensitive profile markers and clears conflicting
    GitHub token and host variables for the directory session.
@@ -259,7 +269,9 @@ gh autoaccount setup --credential-helper
 The optional PATH-level shim supports plain `gh`; the helper supports plain GitHub
 HTTPS `git fetch`, `git pull` and `git push` without prompt-cycle wrappers.
 
-### Export mode (opt-in for third-party tools)
+### Export mode (deprecated)
+
+Deprecated: prefer `gh autoaccount exec -- <command>` for a command-scoped token.
 
 Direnv exports the selected host class's token pair into the shell environment so
 third-party tools can read it. Use `--export-token` when pinning directories that
@@ -428,7 +440,7 @@ The registry is written with mode 0600 and the config directory with mode 0700.
 ### Pin an account to a directory
 
 ```bash
-# Basic wrapper mode: token is not exported into the parent environment.
+# Token is not exported into the parent environment.
 gh autoaccount pin alice --dir ~/personal-projects
 
 # Git identity and, separately, an SSH key:
@@ -637,7 +649,7 @@ above before native unpin; do not rely on automatic cleanup.
 
 ## What gets set
 
-### Wrapper mode (default)
+### Wrapper mode (legacy, deprecated)
 
 | Variable | Purpose |
 |---|---|
@@ -664,7 +676,7 @@ and host variables. These are host-class selectors, not exact-host isolation.
 The HTTPS helper resolves a selected account only for its exact host and returns
 credentials directly to Git without ambient parent-shell token variables.
 
-### Export mode (`--export-token`)
+### Export mode (`--export-token`, deprecated)
 
 In addition to the variables above:
 

@@ -158,6 +158,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		cmd.Println("    routing mode:         native (registry-based)")
 	} else {
 		cmd.Println("    routing mode:         legacy")
+		if notice := legacyNotice(); notice != "" {
+			cmd.Println("    WARN: " + notice)
+		}
 	}
 	if settings.ExternalShell {
 		cmd.Println("    shell integration:    external, not verified (RC management disabled)")

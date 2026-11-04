@@ -25,11 +25,13 @@ func NewPinCmd() *cobra.Command {
 		Long: `Pin a GitHub account to a directory. When you cd into the directory,
 the correct credentials and git identity are automatically activated.
 
-By default, tokens are injected per-command via shell wrapper functions
-(wrapper mode). The token never sits in your shell environment.
+Tokens are injected per-command and never sit in your shell environment. With
+native routing (the default for a fresh install) this covers every shell,
+including agents and cron; legacy wrapper routing is deprecated and only covers
+shells running the prompt hook.
 
-Use --export-token for directories where third-party tools need GH_TOKEN /
-GITHUB_TOKEN as environment variables.
+Use --export-token (deprecated; prefer gh autoaccount exec) for directories
+where third-party tools need GH_TOKEN / GITHUB_TOKEN as environment variables.
 
 Use --owner to pin a GitHub organization or user instead of a directory: any
 gh or Git HTTPS access to that owner's repositories uses this account, and
@@ -119,6 +121,11 @@ func runPinWithHost(user, dir, gitEmail, gitName, sshKey, host, tokenCommand str
 		return fmt.Errorf("cannot load setup settings: %w", err)
 	}
 	native := settings.Native && mode == config.ModeWrapper
+	if exportToken {
+		fmt.Fprintln(os.Stderr, "gh-autoaccount: export mode is deprecated: it leaves a token in the environment. Use `gh autoaccount exec -- <command>` for a command-scoped token.")
+	} else if notice := legacyNotice(); !native && notice != "" {
+		fmt.Fprintln(os.Stderr, "gh-autoaccount: "+notice)
+	}
 	if !native && !direnvlib.IsShellLibInstalled() {
 		return fmt.Errorf("direnv shell library not installed. Run first: gh autoaccount setup")
 	}

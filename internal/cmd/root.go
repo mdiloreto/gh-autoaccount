@@ -21,7 +21,7 @@ func NewRootCmd() *cobra.Command {
 right profile context and git identity without manual switching.
 
 Quick start:
-  gh autoaccount setup --native                  # one-time setup
+  gh autoaccount setup                           # one-time setup
   gh autoaccount pin <user> --dir <path>         # pin an account
   cd <path> && gh api /user --jq .login          # verify it works`,
 		Version:       Version,
