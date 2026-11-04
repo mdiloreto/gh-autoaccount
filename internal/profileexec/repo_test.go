@@ -244,10 +244,19 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		{"positional repo beats GH_REPO", RepoQuery{GH: true, Args: []string{"repo", "view", "other-org/x"}}, "env-org/x", ""},
 		{"positional repo beats remote", RepoQuery{GH: true, Args: []string{"repo", "view", "other-org/x"}}, "", ""},
 		{"url argument beats remote", RepoQuery{GH: true, Args: []string{"pr", "view", "https://github.com/other-org/x/pull/1"}}, "", ""},
-		{"api path beats remote", RepoQuery{GH: true, Args: []string{"api", "repos/other-org/x/pulls"}}, "", ""},
-		{"api path with slash beats GH_REPO", RepoQuery{GH: true, Args: []string{"api", "/repos/other-org/x"}}, "env-org/x", ""},
+		// gh api targets its own endpoint and --hostname, not the cwd.
+		{"api path names its owner", RepoQuery{GH: true, Args: []string{"api", "repos/other-org/x/pulls"}}, "", "other-org"},
+		{"api path with slash beats GH_REPO", RepoQuery{GH: true, Args: []string{"api", "/repos/other-org/x"}}, "env-org/x", "other-org"},
+		{"api paths naming two owners", RepoQuery{GH: true, Args: []string{"api", "repos/a-org/x", "repos/b-org/y"}}, "", ""},
+		{"api graphql names no owner", RepoQuery{GH: true, Args: []string{"api", "graphql", "-f", `query=query { repository(owner: "other-org", name: "x") { id } }`}}, "", ""},
+		{"api non-repo endpoint names no owner", RepoQuery{GH: true, Args: []string{"api", "user"}}, "env-org/x", ""},
+		{"api placeholder uses GH_REPO", RepoQuery{GH: true, Args: []string{"api", "repos/{owner}/{repo}/pulls"}}, "env-org/x", "env-org"},
+		{"api placeholder uses the remote", RepoQuery{GH: true, Args: []string{"api", "repos/{owner}/{repo}"}}, "", "remote-org"},
+		{"api placeholder on another host names no owner", RepoQuery{GH: true, Args: []string{"api", "--hostname", "ghe.example.test", "repos/{owner}/{repo}"}}, "", ""},
+		{"api --hostname is the path's host", RepoQuery{GH: true, Args: []string{"api", "--hostname=ghe.example.test", "repos/acme/x"}}, "", "acme@ghe.example.test"},
+		{"api with dangling --hostname", RepoQuery{GH: true, Args: []string{"api", "repos/acme/x", "--hostname"}}, "", ""},
 		{"positional beats -R", RepoQuery{GH: true, Args: []string{"-R", "flag-org/x", "pr", "view", "https://github.com/other-org/x/pull/1"}}, "", ""},
-		{"same-owner mention keeps the remote", RepoQuery{GH: true, Args: []string{"api", "repos/remote-org/y"}}, "", "remote-org"},
+		{"same-owner mention keeps the remote", RepoQuery{GH: true, Args: []string{"repo", "view", "remote-org/y"}}, "", "remote-org"},
 		{"same-owner url keeps GH_REPO", RepoQuery{GH: true, Args: []string{"pr", "view", "https://github.com/ENV-ORG/x/pull/2"}}, "env-org/x", "env-org"},
 		{"non-repo positional keeps the remote", RepoQuery{GH: true, Args: []string{"pr", "view", "12"}}, "", "remote-org"},
 		// A bare REPO resolves under the authenticated account, not the cwd's.
@@ -259,7 +268,8 @@ func TestDetectRepoSourcePrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GH_REPO", tc.env)
 			got, ok := detectRepo(&tc.query, &remoteCache{dir: repo})
-			if tc.want == "" && ok || tc.want != "" && (!ok || got.Owner != tc.want) {
+			owner, host, hasHost := strings.Cut(tc.want, "@")
+			if tc.want == "" && ok || tc.want != "" && (!ok || got.Owner != owner || hasHost && got.Host != host) {
 				t.Fatalf("got %+v %v, want owner %q", got, ok, tc.want)
 			}
 		})

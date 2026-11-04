@@ -86,6 +86,9 @@ func detectRepo(query *RepoQuery, remotes *remoteCache) (RepoRef, bool) {
 			}
 			return parseRepoSpec(spec, defaultHost)
 		}
+		if len(query.Args) > 0 && query.Args[0] == "api" {
+			return apiTarget(query.Args[1:], remotes, defaultHost)
+		}
 		var ref RepoRef
 		var ok bool
 		switch spec, state := repoFlag(query.Args); {
@@ -133,6 +136,65 @@ func mentionsOtherRepo(args []string, ref RepoRef, defaultHost string) bool {
 		}
 	}
 	return false
+}
+
+// apiTarget selects the repository of a `gh api` call, whose target is its own
+// endpoint and --hostname rather than the working directory. A REST path under
+// repos/OWNER/REPO names it; a {owner} placeholder resolves like gh's base
+// repository (GH_REPO, else the remotes) on the same host. Any other endpoint,
+// GraphQL included, can address anything, so it names no owner.
+func apiTarget(args []string, remotes *remoteCache, defaultHost string) (RepoRef, bool) {
+	host, placeholder := defaultHost, false
+	var refs []RepoRef
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--hostname" {
+			if i+1 >= len(args) {
+				return RepoRef{}, false
+			}
+			i++
+			host = args[i]
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--hostname="); ok {
+			host = value
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if strings.Contains(arg, "{owner}") {
+			placeholder = true
+		} else if ref, ok := apiRepoPath(arg, defaultHost); ok {
+			refs = append(refs, ref)
+		}
+	}
+	host, err := config.NormalizeHost(host)
+	if err != nil {
+		return RepoRef{}, false
+	}
+	switch {
+	case placeholder && len(refs) == 0:
+		var base RepoRef
+		var ok bool
+		if spec := os.Getenv("GH_REPO"); spec != "" {
+			base, ok = parseRepoSpec(spec, defaultHost)
+		} else {
+			base, ok = remotes.selected()
+		}
+		if !ok || base.Host != host {
+			return RepoRef{}, false
+		}
+		return base, true
+	case !placeholder && len(refs) > 0:
+		for _, ref := range refs[1:] {
+			if !strings.EqualFold(ref.Owner, refs[0].Owner) {
+				return RepoRef{}, false
+			}
+		}
+		return RepoRef{Host: host, Owner: refs[0].Owner}, true
+	}
+	return RepoRef{}, false
 }
 
 // apiRepoPath reads OWNER from a `gh api` path such as repos/OWNER/REPO/pulls.
