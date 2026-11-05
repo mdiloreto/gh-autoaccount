@@ -1,19 +1,47 @@
 # gh-autoaccount
 
-A GitHub CLI extension that routes `gh` and Git HTTPS to a pinned GitHub account per
-directory or per repository owner, without `gh auth switch`. Pins apply per command,
-so a terminal, an editor task and an agent can work in different accounts at the
-same time, and the globally active account never changes. Git author/committer
-identity is separate and opt-in.
+**Built for coding agents. Just as useful in your terminal.**
 
-GitHub CLI [supports multiple accounts](https://github.com/cli/cli/blob/trunk/docs/multiple-accounts.md)
-since v2.40.0 but has no automatic per-directory switching. This is beta software.
+A GitHub CLI extension that picks the account for `gh` and Git HTTPS by directory
+or repository owner. Keep personal projects, work repositories and local coding
+agents in their own account context, without changing the globally active account.
+Native command routing, a bundled agent skill, explicit account guards and JSON
+diagnostics are designed for agents working across multiple GitHub accounts.
 
-![Terminal demo of native setup and directory-scoped account selection](docs/demo.gif)
+```text
+~/personal   → alice     gh api /user --jq .login
+~/work       → bob       gh api /user --jq .login
+```
 
-[Watch the MP4](docs/demo.mp4). The demo is offline, using simulated accounts and
-API responses; account selection and credential injection are performed by
-gh-autoaccount.
+[Quick start](#quick-start) · [Set up your agent](#agents-and-scripts) · [Watch the demo](docs/demo.mp4) ·
+[Releases](https://github.com/mdiloreto/gh-autoaccount/releases) ·
+[Report an issue](https://github.com/mdiloreto/gh-autoaccount/issues)
+
+![CLI demo: pin a work account, switch projects, and guard an agent command](docs/demo.gif)
+
+*Recorded offline with simulated accounts and API responses. Account selection
+and credential injection run through the real gh-autoaccount binary.*
+
+## Why gh-autoaccount?
+
+GitHub CLI [supports multiple accounts](https://github.com/cli/cli/blob/trunk/docs/multiple-accounts.md),
+but choosing one with `gh auth switch` changes the active account globally.
+gh-autoaccount makes that choice for each command instead.
+
+- **Pin once, keep working.** Choose an account for a directory and its children,
+  or for repositories owned by an organization or user.
+- **Keep workspaces independent.** Terminals, editor tasks and local agents can
+  use different accounts at the same time.
+- **Give your agent the workflow.** Install the bundled skill so it can inspect
+  account context, use execution guards and diagnose failures without switching
+  the global account.
+- **Use the commands you know.** Plain `gh` and Git HTTPS work through a managed
+  shim and credential helper. No direnv or shell hook is required at runtime.
+- **Add checks before agent actions.** Require a pin, expect a specific account,
+  and verify its GitHub login before a command starts.
+
+**Community beta:** ready for early feedback; behavior may change before 1.0.
+Git author/committer identity is a separate, optional setting.
 
 ## Install
 
@@ -44,20 +72,32 @@ working install.
 
 ```bash
 gh autoaccount setup                 # one time; review the changes it proposes
-gh autoaccount default alice         # account used outside any pin
-gh autoaccount pin bob --dir ~/work-project
-gh autoaccount pin bob --owner work-org
-gh autoaccount status                # what applies in the current directory
-gh autoaccount doctor                # check the installation
 ```
 
-Restart the shell (or apply the PATH instructions `setup` prints) so the managed
-`gh` shim is first on PATH. Then:
+Restart your shell so the managed `gh` shim is first on PATH, then choose your
+accounts (replace `alice` and `bob` with your logged-in GitHub usernames):
 
 ```bash
-cd ~/work-project
-gh api /user --jq .login              # bob
+gh autoaccount default alice         # account used outside any pin
+gh autoaccount pin bob --dir ~/work   # work account in this directory and below
+
+cd ~/work
+gh api /user --jq .login             # bob
+
+cd ~/personal
+gh api /user --jq .login             # alice
 ```
+
+Use existing directories for the examples above. Your globally active `gh`
+account stays unchanged. To route an organization's repositories wherever they
+live, add an owner pin:
+
+```bash
+gh autoaccount pin bob --owner work-org
+```
+
+Check your selection with `gh autoaccount status` and your installation with
+`gh autoaccount doctor`. For agents and scripts, see [guarded execution](#agents-and-scripts).
 
 - A **directory pin** applies to the directory and everything below it; the deepest
   pin wins. Add `--git-email` / `--git-name` to a pin for Git identity (see below).
@@ -74,6 +114,65 @@ gh api /user --jq .login              # bob
 `pin` also accepts `--host` for GitHub Enterprise, `--ssh-key`, and `--token-command`
 (a trusted absolute-path credential broker). `gh autoaccount list` (alias `ls`) shows
 all pins. All commands: `gh autoaccount --help`.
+
+## Agents and scripts
+
+**Agent workflows are a core use case.** Once setup is complete, the native `gh`
+shim and Git HTTPS credential helper route agent tool calls by the same pins as
+your terminal. They do not depend on an interactive shell, a prompt hook or direnv.
+Plain `gh` needs the managed shim on the agent process's PATH; the Git helper is
+registered in Git config. Restart an already-running editor or agent after setup
+so it picks up PATH changes.
+
+### Install the bundled agent skill
+
+The [bundled skill](skills/gh-autoaccount/SKILL.md) teaches agents to inspect the
+selected account, verify identity before acting, distinguish authentication from
+commit authorship, and diagnose failures without bypassing guards or switching
+the global account. It also covers approval boundaries and token handling.
+
+Choose the skills directory your agent loads; for example:
+
+```bash
+gh autoaccount skill                              # preview the guide
+gh autoaccount skill install --dir .agents/skills # install in this project
+```
+
+Use `.claude/skills` or `.opencode/skills` instead when that is where your agent
+loads project skills. The installer creates `gh-autoaccount/SKILL.md` under the
+chosen directory; it never overwrites a customized file. Automatic installation
+supports Linux and macOS. On Windows, print the guide and place it in your agent's
+skills directory manually.
+
+### Inspect, guard, then act
+
+Agents can inspect local context through versioned JSON rather than parsing
+human-readable tables:
+
+```bash
+gh autoaccount status --json
+gh autoaccount list --json
+```
+
+Before an account-sensitive command, require the intended pin and verify the
+remote login (replace `bob` with your account):
+
+```bash
+gh autoaccount exec --require-pin --expect-user bob --verify-identity -- gh pr status
+```
+
+| Guard | What it checks |
+|---|---|
+| `--require-pin` | A real owner or directory pin matches; a default is not enough. |
+| `--expect-user bob` | The selected profile is `bob`. |
+| `--verify-identity` | The credential's GitHub login matches before the child starts. |
+
+Use `--dir PATH` to set both the lookup directory and the child command's working
+directory. Keep the guards on subsequent approved commands and stop on a mismatch.
+JSON diagnostics are local context, not proof of remote identity or repository
+access. `exec` passes the token to the child and its descendants; it is not a
+sandbox. See the [routing reference](docs/reference.md) for the JSON schema,
+selection rules and a pre-write checklist.
 
 ## How it works
 
@@ -165,30 +264,6 @@ matching pin fails before the command runs, and `--expect-user` checks the
 overridden selection. Like `exec --user`, the override does not carry a pin's host,
 token command or Git identity. Anything started from that shell, including agents,
 inherits it.
-
-### Agents and scripts
-
-Plain `gh` and Git HTTPS are covered by the shim and helper. For a command that must
-not run under the wrong account, use guards:
-
-```bash
-gh autoaccount exec --require-pin --expect-user bob --verify-identity -- gh pr status
-```
-
-`--require-pin` fails unless a real pin matches (a default does not count),
-`--expect-user` checks the selected profile name, and `--verify-identity` checks the
-remote login before the child runs. `exec` passes the token to the child and its
-descendants; it is not a sandbox. `status --json` and `list --json` give versioned,
-local-only output; see the [routing reference](docs/reference.md) for the schema and
-a pre-write checklist.
-
-`gh autoaccount skill` prints a bundled guide for coding agents. Install it under an
-explicit skills directory (Linux and macOS only; it never overwrites a customized
-file):
-
-```bash
-gh autoaccount skill install --dir .claude/skills    # or .agents/skills, .opencode/skills
-```
 
 ### Externally managed shells
 
