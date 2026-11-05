@@ -50,9 +50,8 @@ func ShellHookPath() (string, error) {
 	return filepath.Join(dir, "hook.sh"), nil
 }
 
-// RCFiles are the shell startup files that may source the hook: setup wrote its
-// block into some of them, users were told to add the line by hand when it could
-// not, and modular configs source it from their own directories.
+// RCFiles are the home startup files setup could write the hook source block
+// into, and where users were told to add the line by hand when it could not.
 func RCFiles() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -62,57 +61,128 @@ func RCFiles() ([]string, error) {
 	for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"} {
 		files = append(files, filepath.Join(home, name))
 	}
+	return files, nil
+}
+
+// Bounds for HookReferences: a scan that would exceed them is reported as
+// incomplete rather than silently cut short.
+const (
+	scanMaxDepth = 6
+	scanMaxFiles = 2000
+	scanMaxBytes = 16 << 20
+	scanMaxFile  = 1 << 20
+)
+
+// HookReferences lists shell config files that mention the hook outside a
+// managed block: the home startup files, zsh's files in $ZDOTDIR, and modular
+// configs under $XDG_CONFIG_HOME/shell, zsh and bash. complete is false when any
+// file or directory could not be read or a bound was reached; callers must then
+// treat the hook as possibly still sourced.
+func HookReferences() (refs []string, complete bool) {
+	s := &hookScan{complete: true, visited: map[string]bool{}}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false
+	}
+	files, _ := RCFiles()
+	if zdot := os.Getenv("ZDOTDIR"); zdot != "" {
+		for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".zlogin"} {
+			files = append(files, filepath.Join(zdot, name))
+		}
+	}
+	for _, path := range files {
+		s.file(path)
+	}
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		configHome = filepath.Join(home, ".config")
 	}
-	dirs := []string{filepath.Join(configHome, "shell"), filepath.Join(configHome, "zsh"), filepath.Join(configHome, "bash")}
-	if zdot := os.Getenv("ZDOTDIR"); zdot != "" {
-		dirs = append(dirs, zdot)
+	for _, name := range []string{"shell", "zsh", "bash"} {
+		s.dir(filepath.Join(configHome, name), 0)
 	}
-	for _, dir := range dirs {
-		files = append(files, shellConfigFiles(dir)...)
-	}
-	return files, nil
+	return s.refs, s.complete
 }
 
-// shellConfigFiles lists the small regular files in a modular shell config
-// directory. The walk is bounded so a large tree cannot stall setup.
-func shellConfigFiles(root string) []string {
-	const maxDepth, maxSize = 4, 1 << 20
-	var files []string
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return nil
+type hookScan struct {
+	refs     []string
+	complete bool
+	files    int
+	bytes    int64
+	visited  map[string]bool
+}
+
+// dir walks a config directory, following symlinked directories once each so a
+// link back up the tree cannot loop.
+func (s *hookScan) dir(path string, depth int) {
+	real, err := filepath.EvalSymlinks(path)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil || depth > scanMaxDepth {
+		s.complete = false
+		return
+	}
+	if s.visited[real] {
+		return
+	}
+	s.visited[real] = true
+	entries, err := os.ReadDir(real)
+	if err != nil {
+		s.complete = false
+		return
+	}
+	for _, entry := range entries {
+		if !s.complete {
+			return
 		}
-		if entry.IsDir() {
-			if rel, err := filepath.Rel(root, path); err == nil && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
-				return filepath.SkipDir
+		child := filepath.Join(path, entry.Name())
+		info, err := os.Stat(child)
+		switch {
+		case err != nil:
+			if !os.IsNotExist(err) { // a dangling link sources nothing
+				s.complete = false
 			}
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
+		case info.IsDir():
+			if entry.Name() != ".git" {
+				s.dir(child, depth+1)
 			}
-			return nil
+		case info.Mode().IsRegular():
+			s.file(child)
 		}
-		if info, err := entry.Info(); err == nil && info.Mode().IsRegular() && info.Size() <= maxSize {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files
+	}
+}
+
+// file records path when it mentions the hook outside the managed block,
+// which setup removes itself.
+func (s *hookScan) file(path string) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return
+	}
+	s.files++
+	if err != nil || !info.Mode().IsRegular() || info.Size() > scanMaxFile || s.files > scanMaxFiles || s.bytes+info.Size() > scanMaxBytes {
+		s.complete = false
+		return
+	}
+	s.bytes += info.Size()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		s.complete = false
+		return
+	}
+	content := string(data)
+	if start, end, err := findBlock(content, hookStart, hookEnd); err == nil && start >= 0 {
+		content = content[:start] + content[end:]
+	}
+	if strings.Contains(content, "gh-autoprofile/hook.sh") {
+		s.refs = append(s.refs, path)
+	}
 }
 
 // HasHookSource reports whether an RC file still has the managed hook block.
 func HasHookSource(path string) bool {
 	data, err := os.ReadFile(path)
 	return err == nil && bytes.Contains(data, []byte(hookStart))
-}
-
-// ReferencesHook reports whether a startup file mentions the hook file at all,
-// inside the managed block or in a line the user added by hand.
-func ReferencesHook(path string) bool {
-	data, err := os.ReadFile(path)
-	return err == nil && bytes.Contains(data, []byte("gh-autoprofile/hook.sh"))
 }
 
 // RemoveHookSource deletes the managed hook-source block from an RC file and

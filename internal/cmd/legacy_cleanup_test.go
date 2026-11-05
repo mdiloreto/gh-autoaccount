@@ -250,7 +250,7 @@ func TestSetupKeepsHookSourcedFromModularConfig(t *testing.T) {
 			t.Fatalf("doctor lacks %q:\n%s", want, doctor)
 		}
 	}
-	if strings.Contains(doctor, "WARN files left from the retired direnv modes") || !strings.Contains(doctor, "The remaining issues need the manual steps shown above.") {
+	if strings.Contains(doctor, "WARN files left from the retired direnv modes") || strings.Contains(doctor, "Run `gh autoaccount setup --migrate`") || !strings.Contains(doctor, "Some issues need the manual steps shown with them") {
 		t.Fatalf("a kept hook is a manual step, not something migrate removes:\n%s", doctor)
 	}
 }
@@ -334,7 +334,8 @@ func TestDoctorReportsLeftoversAndPassesOnceGone(t *testing.T) {
 		filepath.Join(b.wrapperDir, ".envrc") + " has a retired managed block",
 		b.lib,
 		b.hook,
-		"referenced from: " + b.rc,
+		// A managed block is migrate's to remove, not a manual reference.
+		b.rc + " has the retired hook source block",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor lacks %q:\n%s", want, out)
