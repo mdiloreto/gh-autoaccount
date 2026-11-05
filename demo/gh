@@ -8,7 +8,8 @@ case "$*" in
     [[ -z ${GH_TOKEN-}${GITHUB_TOKEN-}${GH_ENTERPRISE_TOKEN-}${GITHUB_ENTERPRISE_TOKEN-}${GH_HOST-} ]] || exit 1
     printf 'fixture-%s-credential\n' "$4" ;;
   'api user'|'api /user'|'api user --jq .login'|'api /user --jq .login'|'api --hostname github.com user --jq .login'|'api --hostname github.com /user --jq .login')
-    [[ -z ${GITHUB_TOKEN-}${GH_ENTERPRISE_TOKEN-}${GITHUB_ENTERPRISE_TOKEN-} && ( -z ${GH_HOST-} || ${GH_HOST-} == github.com ) ]] || exit 1
+    [[ -z ${GH_ENTERPRISE_TOKEN-}${GITHUB_ENTERPRISE_TOKEN-} && ( -z ${GH_HOST-} || ${GH_HOST-} == github.com ) ]] || exit 1
+    [[ -z ${GITHUB_TOKEN-} || ${GITHUB_TOKEN-} == "${GH_TOKEN-}" ]] || exit 1
     case ${GH_TOKEN-} in fixture-alice-credential) login=alice ;; fixture-bob-credential) login=bob ;; *) exit 1 ;; esac
     if [[ $* == *'--jq .login' ]]; then printf '%s\n' "$login"; else printf '{"login":"%s"}\n' "$login"; fi ;;
   *) printf 'Unsupported offline gh operation\n' >&2; exit 1 ;;
