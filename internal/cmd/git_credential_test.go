@@ -176,6 +176,58 @@ func TestCredentialHelperSelection(t *testing.T) {
 	}
 }
 
+// The session override behaves like exec --user for github.com and leaves
+// other hosts to their pins, since it cannot name a host.
+func TestCredentialHelperSessionOverride(t *testing.T) {
+	const pins = `pins:
+  - user: bob
+    owner: work-org
+  - user: dana
+    owner: ghe-org
+    host: ghe.example.test
+  - user: carol
+    dir: "{{work}}"
+`
+	for _, tc := range []struct {
+		name, request, want string
+		inPin, wantErr      bool
+	}{
+		{name: "overrides the directory pin", inPin: true, request: "protocol=https\nhost=github.com\n\n", want: "erin"},
+		{name: "overrides an owner pin", request: "protocol=https\nhost=github.com\npath=work-org/x.git\n\n", want: "erin"},
+		{name: "overrides the default", request: "protocol=https\nhost=github.com\n\n", want: "erin"},
+		{name: "enterprise host keeps its pin", request: "protocol=https\nhost=ghe.example.test\npath=ghe-org/x.git\n\n", want: "dana"},
+		{name: "missing host still fails closed", request: "protocol=https\npath=work-org/x.git\n\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unpinned, pinned := credentialFixture(t, pins)
+			t.Setenv("GH_AUTOACCOUNT_USER", "erin")
+			if tc.inPin {
+				t.Chdir(pinned)
+			} else {
+				t.Chdir(unpinned)
+			}
+			out, err := runCredentialGet(t, tc.request)
+			if tc.wantErr {
+				if err == nil || out != "quit=true\n\n" {
+					t.Fatalf("want fail-closed, got %q (%v)", out, err)
+				}
+				return
+			}
+			if want := "username=x-access-token\npassword=tok-" + tc.want + "\n\n"; err != nil || out != want {
+				t.Fatalf("got %q (%v), want %q", out, err, want)
+			}
+		})
+	}
+	t.Run("invalid override fails closed", func(t *testing.T) {
+		unpinned, _ := credentialFixture(t, pins)
+		t.Setenv("GH_AUTOACCOUNT_USER", "-bad")
+		t.Chdir(unpinned)
+		if out, err := runCredentialGet(t, "protocol=https\nhost=github.com\n\n"); err == nil || out != "quit=true\n\n" {
+			t.Fatalf("want fail-closed, got %q (%v)", out, err)
+		}
+	})
+}
+
 func TestCredentialHelperIgnoresNonHTTPSAndFailsClosed(t *testing.T) {
 	unpinned, _ := credentialFixture(t, "pins:\n  - user: bob\n    owner: work-org\n")
 	t.Chdir(unpinned)

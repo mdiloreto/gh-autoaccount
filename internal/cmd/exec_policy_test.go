@@ -100,7 +100,7 @@ exit "$TEST_EXEC_POLICY_EXIT_CODE"
 	}}
 
 	for _, tc := range []struct {
-		name, cwd, dir, marker, markerHost, wantUser, wantMode, wantToken, wantAuth, wantErr string
+		name, cwd, dir, marker, markerHost, session, wantUser, wantMode, wantToken, wantAuth, wantErr string
 		flags                                                                                []string
 		pinIdentity, tokenFailure, invalidRegistry                                           bool
 		exitCode                                                                             int
@@ -142,6 +142,13 @@ exit "$TEST_EXEC_POLICY_EXIT_CODE"
 		{name: "require pin with matching expected override rejects invalid registry", flags: []string{"--require-pin", "--user", "alice", "--expect-user", "alice"}, invalidRegistry: true, wantErr: "cannot load pin registry"},
 		{name: "explicit false require pin preserves default", cwd: unpinned, flags: []string{"--require-pin=false"}, wantToken: "synthetic-ambient"},
 		{name: "default exit 42 and streams forwarded", cwd: other, wantUser: "bob", wantMode: "wrapper", wantToken: "stored-bob", wantAuth: "bob\n", exitCode: 42},
+		{name: "session override selects over the pin", session: "bob", wantUser: "bob", wantMode: "wrapper", wantToken: "stored-bob", wantAuth: "bob\n"},
+		{name: "session override in an unpinned directory", cwd: unpinned, session: "alice", wantUser: "alice", wantMode: "wrapper", wantToken: "stored-alice", wantAuth: "alice\n"},
+		{name: "explicit user outranks the session override", session: "bob", flags: []string{"--user", "alice"}, wantUser: "alice", wantMode: "wrapper", wantToken: "stored-alice", wantAuth: "alice\n"},
+		{name: "require pin rejects a different session override", session: "bob", flags: []string{"--require-pin"}, wantErr: `GH_AUTOACCOUNT_USER="bob" does not match directory pin "alice"`},
+		{name: "require pin keeps the pin for a matching session override", session: "ALICE", flags: []string{"--require-pin"}, wantUser: "alice", wantMode: "export", wantToken: "stored-alice", wantAuth: "alice\n", pinIdentity: true},
+		{name: "expected user checks the session override", session: "bob", flags: []string{"--expect-user", "alice"}, wantErr: "selected profile is \"bob\""},
+		{name: "invalid session override rejected before credentials", session: "not a login", wantErr: "GH_AUTOACCOUNT_USER is not a valid GitHub login"},
 		{name: "guarded exit 42 and streams forwarded", flags: []string{"--expect-user", "ALICE", "--require-pin"}, wantUser: "alice", wantMode: "export", wantToken: "stored-alice", wantAuth: "alice\n", pinIdentity: true, exitCode: 42},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +171,7 @@ exit "$TEST_EXEC_POLICY_EXIT_CODE"
 			t.Setenv("TEST_EXEC_POLICY_EXIT_CODE", fmt.Sprint(tc.exitCode))
 			t.Setenv("GH_AUTOPROFILE_USER", tc.marker)
 			t.Setenv("GH_AUTOPROFILE_HOST", tc.markerHost)
+			t.Setenv("GH_AUTOACCOUNT_USER", tc.session)
 			if tc.tokenFailure {
 				t.Setenv("TEST_EXEC_POLICY_TOKEN_FAILURE", "1")
 			}
