@@ -172,10 +172,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if pin != nil {
 		helperHost = pin.Host
 	}
-	helperConfigured := gitcred.CheckConfiguredHost(helperHost)
-	if helperConfigured {
+	// Git builds the helper list from every config level, so a repository can
+	// clear the global setting; report what applies in this directory.
+	helperActive, resetBy, activeErr := gitcred.ManagedHelperActive(cwd, helperHost)
+	switch {
+	case activeErr != nil:
+		cmd.Printf("    git helper active:    unknown (%s)\n", sanitizeStatusValue(activeErr.Error()))
+	case helperActive:
 		cmd.Println("    git helper active:    yes")
-	} else {
+	case resetBy != "":
+		cmd.Printf("    git helper active:    no; %s clears the helper list for %s here\n", sanitizeStatusValue(resetBy), sanitizeStatusValue(helperHost))
+		cmd.Println("                          remove that entry, or add the managed helper after it, to route Git HTTPS")
+	default:
 		cmd.Println("    git helper active:    no (required)")
 	}
 
@@ -196,7 +204,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		cmd.Println("  No pin selected. Default gh behavior; GitHub identity is not verified.")
 	}
-	if pin != nil && helperConfigured {
+	if pin != nil && helperActive {
 		cmd.Println("  Plain git HTTPS uses the built-in gh-autoaccount credential helper.")
 	}
 

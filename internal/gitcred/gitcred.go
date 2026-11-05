@@ -326,6 +326,82 @@ func isManagedHelper(helper, path string) bool {
 	return helper == primaryHelper(path) || helper == "!"+path+" get"
 }
 
+// HelperEntry is one credential helper in the list Git builds for a URL, with
+// the config file it came from.
+type HelperEntry struct {
+	Value  string
+	Origin string
+}
+
+// EffectiveHelpers returns the helpers Git runs for https://host in dir, in
+// order. Git reads every credential.helper and credential.https://host.helper
+// entry across system, global, local and worktree config in that order, and an
+// empty value clears the list built so far; resetBy is the origin of the last
+// clearing entry.
+func EffectiveHelpers(dir, host string) (chain []HelperEntry, resetBy string, err error) {
+	host, err = config.NormalizeHost(host)
+	if err != nil {
+		return nil, "", err
+	}
+	out, err := exec.Command("git", "-C", dir, "config", "--show-origin", "-z", "--get-regexp", `^credential\..*helper$`).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, "", nil // no helper configured anywhere
+		}
+		return nil, "", fmt.Errorf("cannot read Git credential configuration: %w", err)
+	}
+	// Records are "origin NUL key LF value NUL".
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		key, value, _ := strings.Cut(fields[i+1], "\n")
+		if !helperKeyMatches(key, host) {
+			continue
+		}
+		origin := strings.TrimPrefix(fields[i], "file:")
+		if value == "" {
+			chain, resetBy = nil, origin
+			continue
+		}
+		chain = append(chain, HelperEntry{Value: value, Origin: origin})
+	}
+	return chain, resetBy, nil
+}
+
+// helperKeyMatches reports whether a credential helper key applies to every
+// request for https://host: the generic key, or the host's own URL section.
+// Git lowercases the section and variable names but keeps the URL as written.
+func helperKeyMatches(key, host string) bool {
+	if key == "credential.helper" {
+		return true
+	}
+	url, ok := strings.CutPrefix(key, "credential.")
+	if !ok {
+		return false
+	}
+	url, ok = strings.CutSuffix(url, ".helper")
+	return ok && strings.EqualFold(strings.TrimSuffix(url, "/"), "https://"+host)
+}
+
+// ManagedHelperActive reports whether Git in dir runs the managed helper for
+// host. When it does not, resetBy names the config file that cleared it, if any.
+func ManagedHelperActive(dir, host string) (active bool, resetBy string, err error) {
+	helperPath, err := HelperPath()
+	if err != nil {
+		return false, "", err
+	}
+	chain, resetBy, err := EffectiveHelpers(dir, host)
+	if err != nil {
+		return false, "", err
+	}
+	for _, entry := range chain {
+		if isManagedHelper(entry.Value, helperPath) {
+			return true, "", nil
+		}
+	}
+	return false, resetBy, nil
+}
+
 // CheckConfigured reports whether git is configured to use the managed helper.
 func CheckConfigured() bool {
 	return CheckConfiguredHost("github.com")
