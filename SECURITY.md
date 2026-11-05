@@ -15,8 +15,11 @@ In scope — a fix is expected if broken:
 - tokens live only in child processes, never in the parent shell
 - generated shims and helper scripts quote interpolated paths literally
 - account activation fails closed instead of falling back to another account
-- pins are the only source of accounts: canonical physical directory pins and
-  `(host, user)` select credentials. With owner pins, the repository URL being
+- accounts come only from pins, the configured default, an explicit `exec --user`,
+  and the session override `GH_AUTOACCOUNT_USER` that the user's own environment
+  sets; the override and `exec --user` never bypass `--require-pin` or
+  `--expect-user`. Canonical physical directory pins and `(host, user)` select
+  credentials. With owner pins, the repository URL being
   accessed (credential path, `-R`/`GH_REPO`, clone target, or a checkout's remotes
   and submodules) chooses among them, and credentials are returned only for the
   pin's exact host; a checkout's submodule under an owner-pinned organization

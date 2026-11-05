@@ -42,10 +42,13 @@ For another directory use `status --dir PATH --json` and inspect its context.
 
 ## Select and verify
 
-Without `--require-pin`, `exec` selects an explicit `--user`, then the deepest
+Without `--require-pin`, `exec` selects an explicit `--user`, then the session
+override `GH_AUTOACCOUNT_USER` if the environment sets it, then the deepest
 real matching directory pin, then the `github.com` default, then no selection
-(ordinary `gh` behavior). An explicit `--user` without `--require-pin`, and a default, do not
-inherit pin host, token command, identity, or SSH metadata, even when a pin matches.
+(ordinary `gh` behavior). An explicit `--user` without `--require-pin`, the session
+override, and a default do not inherit pin host, token command, identity, or SSH
+metadata, even when a pin matches. Do not set or change `GH_AUTOACCOUNT_USER`
+yourself; with `--require-pin`, a value that differs from the pin fails closed.
 Pins match canonical physical paths.
 
 `--require-pin` requires a real pin, retains its metadata, and rejects a conflicting

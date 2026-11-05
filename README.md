@@ -113,8 +113,9 @@ A copy does not follow `gh extension upgrade` the way a symlink does. Run
 warns while the copy is older than the installed extension. mise integration
 (`--mise`) is not available on Windows.
 
-Selection order is: `exec --user`, then the owner pin for the accessed repository,
-then the deepest directory pin, then the default. **An owner pin wins over a
+Selection order is: `exec --user`, then the session override (below), then the
+owner pin for the accessed repository, then the deepest directory pin, then the
+default. **An owner pin wins over a
 directory pin.** The owner comes from Git's request path, `gh -R/--repo`, `GH_REPO`,
 the clone target, or the working directory's remotes. For `gh` this is a
 best-effort reading of the command line; when the target is unclear, the directory
@@ -137,6 +138,32 @@ direnv. It needs Git 2.30+, and Git 2.36+ for identity on owner pins. Repository
 `user.name`/`user.email` and explicit `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables
 override it. Account selection and identity are separate: a matching author does
 not prove which account authenticates a push.
+
+### Prompt and session override
+
+`gh autoaccount current` prints only the login plain `gh` would use in the current
+directory, or nothing. It resolves no credential and makes no network call, so it
+fits a prompt or status line:
+
+```bash
+PROMPT='$(gh autoaccount current) %~ %# '    # zsh
+```
+
+To act as one account for a while, set `GH_AUTOACCOUNT_USER` in that shell. Plain
+`gh`, `exec` and Git HTTPS to github.com then use that login instead of any pin
+(other hosts keep their pins); unset it to return to pins:
+
+```bash
+export GH_AUTOACCOUNT_USER=alice
+gh autoaccount current                         # alice
+unset GH_AUTOACCOUNT_USER
+```
+
+Guards still apply. With `exec --require-pin`, an override that differs from the
+matching pin fails before the command runs, and `--expect-user` checks the
+overridden selection. Like `exec --user`, the override does not carry a pin's host,
+token command or Git identity. Anything started from that shell, including agents,
+inherits it.
 
 ### Agents and scripts
 
@@ -248,7 +275,8 @@ directory with mode 0700.
 
 ## Security
 
-Pins are the only source of accounts. Tokens are injected per command into the
+Accounts come only from your pins, your default, `exec --user`, and the session
+override you set in your own environment. Tokens are injected per command into the
 child process, not exported into your shell, and repository content never selects
 credentials. This limits exposure but is not a sandbox: a malicious child or
 same-user process can still read what it is handed or replace trusted paths.
