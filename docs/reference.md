@@ -5,10 +5,16 @@ rules, the guards on `exec`, the JSON output, and linked-worktree caveats.
 
 ## Selection precedence
 
-Without `--require-pin`: explicit `exec --user`, then the owner pin for the accessed
-repository, then the deepest directory pin, then the configured `github.com`
-default, then unselected behavior (ordinary global `gh`/Git). A default is not a pin
-and does not inherit pin metadata; neither does an explicit `--user`.
+Without `--require-pin`: explicit `exec --user`, then the session override
+`GH_AUTOACCOUNT_USER`, then the owner pin for the accessed repository, then the
+deepest directory pin, then the configured `github.com` default, then unselected
+behavior (ordinary global `gh`/Git). A default is not a pin and does not inherit pin
+metadata; neither does an explicit `--user` or the session override. The Git helper
+applies the session override only to github.com requests.
+
+With `--require-pin`, the pin is kept, and an explicit `--user` or a session override
+that names a different login fails before any credential is resolved. `status`
+reports a session selection as source `session`.
 
 Pins match canonical physical directories, including symlink aliases; the deepest
 match wins. Accounts are identified by `(host, user)`, with a missing host meaning

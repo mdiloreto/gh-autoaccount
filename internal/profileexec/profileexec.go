@@ -55,62 +55,103 @@ type Policy struct {
 	Repo *RepoQuery
 }
 
-// ResolveContextWithPolicy selects a profile and resolves its credential.
-func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
+// accountSelection is the account a command will use, before any credential
+// is resolved.
+type accountSelection struct {
+	dir       string
+	pin       *config.Pin
+	user      string
+	source    string
+	conflicts []string
+}
+
+// SelectedAccount reports the account and selection source that plain gh would
+// use in dir, without resolving a credential. It is cheap enough for a prompt:
+// it reads the registry, and reads the checkout's remotes only when owner pins
+// exist.
+func SelectedAccount(dir string) (string, string, error) {
+	// GH matches plain gh, which also honors GH_REPO.
+	sel, err := selectAccount(dir, Policy{Repo: &RepoQuery{GH: true}})
+	return sel.user, sel.source, err
+}
+
+// selectAccount applies the selection order: an explicit --user, the session
+// override, the owner pin for the accessed repository, the deepest directory
+// pin, then the default. Guards are checked here so they also bind the session
+// override.
+func selectAccount(dir string, policy Policy) (accountSelection, error) {
 	absDir, err := config.CanonicalDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("cannot resolve directory: %w", err)
+		return accountSelection{}, fmt.Errorf("cannot resolve directory: %w", err)
 	}
+	sel := accountSelection{dir: absDir, source: "none"}
 
 	var selectedPin *config.Pin
 	var pinSource string
-	var conflicts []string
 	if policy.User == "" || policy.RequirePin {
 		registry, err := config.LoadPins()
 		if err != nil {
-			return nil, fmt.Errorf("cannot load pin registry: %w", err)
+			return sel, fmt.Errorf("cannot load pin registry: %w", err)
 		}
-		sel, err := selectPin(registry, dir, policy.Repo)
+		found, err := selectPin(registry, dir, policy.Repo)
 		if err != nil {
-			return nil, fmt.Errorf("cannot select pin: %w", err)
+			return sel, fmt.Errorf("cannot select pin: %w", err)
 		}
-		selectedPin, pinSource, conflicts = sel.pin, sel.source, sel.conflicts
+		selectedPin, pinSource, sel.conflicts = found.pin, found.source, found.conflicts
 	}
 	if policy.RequirePin && selectedPin == nil {
-		return nil, fmt.Errorf("no pin found for directory: %s (--require-pin)", absDir)
+		return sel, fmt.Errorf("no pin found for directory: %s (--require-pin)", absDir)
+	}
+	kind := "directory"
+	if pinSource == "owner" {
+		kind = "owner"
 	}
 	if policy.User != "" && policy.RequirePin && !strings.EqualFold(policy.User, selectedPin.User) {
-		kind := "directory"
-		if pinSource == "owner" {
-			kind = "owner"
-		}
-		return nil, fmt.Errorf("--user %q does not match %s pin", policy.User, kind)
+		return sel, fmt.Errorf("--user %q does not match %s pin", policy.User, kind)
 	}
-	var pin *config.Pin
-	var selectedUser, selectionSource string
-	if policy.User != "" && !policy.RequirePin {
-		selectedUser, selectionSource = policy.User, "explicit"
-	} else if selectedPin != nil {
-		pin = selectedPin
-		selectedUser, selectionSource = pin.User, pinSource
-	} else {
-		settings, loadErr := config.LoadSettings()
-		if loadErr != nil {
-			return nil, fmt.Errorf("cannot load setup settings: %w", loadErr)
+	sessionUser, err := SessionUser()
+	if err != nil {
+		return sel, err
+	}
+	// A guarded command keeps the pin; an override that disagrees fails closed
+	// rather than being silently ignored or silently winning.
+	if policy.RequirePin && sessionUser != "" && !strings.EqualFold(sessionUser, selectedPin.User) {
+		return sel, fmt.Errorf("%s=%q does not match %s pin %q (--require-pin)", SessionUserEnv, sessionUser, kind, selectedPin.User)
+	}
+	switch {
+	case policy.User != "" && !policy.RequirePin:
+		sel.user, sel.source = policy.User, "explicit"
+	case sessionUser != "" && !policy.RequirePin:
+		sel.user, sel.source = sessionUser, "session"
+	case selectedPin != nil:
+		sel.pin, sel.user, sel.source = selectedPin, selectedPin.User, pinSource
+	default:
+		settings, err := config.LoadSettings()
+		if err != nil {
+			return sel, fmt.Errorf("cannot load setup settings: %w", err)
 		}
-		selectedUser = settings.DefaultUser
-		if selectedUser != "" {
-			selectionSource = "default"
+		if settings.DefaultUser != "" {
+			sel.user, sel.source = settings.DefaultUser, "default"
 		}
 	}
+	if sel.user == "" && policy.ExpectUser != "" {
+		return sel, fmt.Errorf("--expect-user %q: no profile selected for directory: %s", policy.ExpectUser, absDir)
+	}
+	if sel.user != "" && policy.ExpectUser != "" && !strings.EqualFold(sel.user, policy.ExpectUser) {
+		return sel, fmt.Errorf("--expect-user %q: selected profile is %q", policy.ExpectUser, sel.user)
+	}
+	return sel, nil
+}
+
+// ResolveContextWithPolicy selects a profile and resolves its credential.
+func ResolveContextWithPolicy(dir string, policy Policy) (*Context, error) {
+	sel, err := selectAccount(dir, policy)
+	if err != nil {
+		return nil, err
+	}
+	absDir, pin, selectedUser, selectionSource, conflicts := sel.dir, sel.pin, sel.user, sel.source, sel.conflicts
 	if selectedUser == "" {
-		if policy.ExpectUser != "" {
-			return nil, fmt.Errorf("--expect-user %q: no profile selected for directory: %s", policy.ExpectUser, absDir)
-		}
 		return &Context{Dir: absDir, SelectionSource: "none", OwnerConflicts: conflicts}, nil
-	}
-	if policy.ExpectUser != "" && !strings.EqualFold(selectedUser, policy.ExpectUser) {
-		return nil, fmt.Errorf("--expect-user %q: selected profile is %q", policy.ExpectUser, selectedUser)
 	}
 
 	// The named account always resolves its own stored credential; inherited
