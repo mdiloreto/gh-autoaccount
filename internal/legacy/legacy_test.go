@@ -340,3 +340,51 @@ func TestCleanupManagedEnvrcRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestRCFilesIncludeModularShellConfigs(t *testing.T) {
+	home := legacyHome(t)
+	zdot := filepath.Join(home, "zdot")
+	t.Setenv("ZDOTDIR", zdot)
+	config := filepath.Join(home, "config")
+	want := []string{
+		filepath.Join(config, "shell", "tools", "gh-autoprofile.zsh"),
+		filepath.Join(config, "zsh", "conf.d", "path.zsh"),
+		filepath.Join(config, "bash", "init.bash"),
+		filepath.Join(zdot, ".zshrc"),
+	}
+	for _, path := range want {
+		write(t, path, "source \"$HOME/.config/gh-autoprofile/hook.sh\"\n", 0644)
+	}
+	// Bounded walk: too deep, inside .git, or too large is skipped.
+	skipped := []string{
+		filepath.Join(config, "shell", "a", "b", "c", "d", "e", "deep.zsh"),
+		filepath.Join(config, "shell", ".git", "hooks", "x"),
+	}
+	for _, path := range skipped {
+		write(t, path, "gh-autoprofile/hook.sh\n", 0644)
+	}
+	big := filepath.Join(config, "shell", "big.zsh")
+	write(t, big, strings.Repeat("x", 2<<20), 0644)
+
+	files, err := RCFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := map[string]bool{}
+	for _, f := range files {
+		has[f] = true
+	}
+	for _, path := range want {
+		if !has[path] || !ReferencesHook(path) {
+			t.Errorf("modular config not scanned: %s", path)
+		}
+	}
+	for _, path := range append(skipped, big) {
+		if has[path] {
+			t.Errorf("walk should skip %s", path)
+		}
+	}
+	if !has[filepath.Join(home, ".zshrc")] {
+		t.Error("home startup files missing")
+	}
+}

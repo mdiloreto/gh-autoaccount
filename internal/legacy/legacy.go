@@ -51,8 +51,8 @@ func ShellHookPath() (string, error) {
 }
 
 // RCFiles are the shell startup files that may source the hook: setup wrote its
-// block into some of them, and users were told to add the line by hand when it
-// could not.
+// block into some of them, users were told to add the line by hand when it could
+// not, and modular configs source it from their own directories.
 func RCFiles() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -62,7 +62,44 @@ func RCFiles() ([]string, error) {
 	for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"} {
 		files = append(files, filepath.Join(home, name))
 	}
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	dirs := []string{filepath.Join(configHome, "shell"), filepath.Join(configHome, "zsh"), filepath.Join(configHome, "bash")}
+	if zdot := os.Getenv("ZDOTDIR"); zdot != "" {
+		dirs = append(dirs, zdot)
+	}
+	for _, dir := range dirs {
+		files = append(files, shellConfigFiles(dir)...)
+	}
 	return files, nil
+}
+
+// shellConfigFiles lists the small regular files in a modular shell config
+// directory. The walk is bounded so a large tree cannot stall setup.
+func shellConfigFiles(root string) []string {
+	const maxDepth, maxSize = 4, 1 << 20
+	var files []string
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if rel, err := filepath.Rel(root, path); err == nil && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
+				return filepath.SkipDir
+			}
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info, err := entry.Info(); err == nil && info.Mode().IsRegular() && info.Size() <= maxSize {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files
 }
 
 // HasHookSource reports whether an RC file still has the managed hook block.
