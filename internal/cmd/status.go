@@ -163,7 +163,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	helperPath, helperErr := gitcred.HelperPath()
 	helperInfo, statErr := os.Stat(helperPath)
-	if helperErr == nil && statErr == nil && helperInfo.Mode().IsRegular() && helperInfo.Mode().Perm()&0111 != 0 {
+	if helperErr == nil && statErr == nil && config.IsExecutable(helperInfo) {
 		cmd.Println("    git helper installed: yes")
 	} else {
 		cmd.Println("    git helper installed: no (required; missing or not executable)")

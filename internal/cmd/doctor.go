@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
@@ -18,6 +19,10 @@ import (
 // whose permissions are looser than the documented hardening targets (config
 // dir 0700, pins.yml 0600). Paths that do not exist are skipped.
 func configPermIssues() []string {
+	// Windows has no POSIX mode bits; the profile directory's ACL keeps it private.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	var warnings []string
 	if dir, err := config.ConfigDir(); err == nil {
 		if fi, statErr := os.Stat(dir); statErr == nil && fi.Mode().Perm() != 0700 {
@@ -117,25 +122,30 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	helperPath, helperErr := gitcred.HelperPath()
 	helperInfo, statErr := os.Stat(helperPath)
-	helperUsable := helperErr == nil && statErr == nil && helperInfo.Mode().IsRegular() && helperInfo.Mode().Perm()&0111 != 0
+	helperUsable := helperErr == nil && statErr == nil && config.IsExecutable(helperInfo)
 	if helperUsable {
 		fmt.Println("OK   git credential helper installed")
 		fmt.Printf("     path: %s\n", helperPath)
 		if target, targetErr := gitcred.Target(); targetErr != nil {
 			fmt.Printf("WARN cannot inspect git credential helper target: %v\n", targetErr)
 			issues++
-		} else if info, statErr := os.Stat(target); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		} else if info, statErr := os.Stat(target); statErr != nil || !config.IsExecutable(info) {
 			fmt.Printf("WARN git credential helper target is missing or not executable: %s\n", target)
 			fmt.Println("     repair with: gh autoaccount setup --migrate")
 			issues++
 		} else {
 			fmt.Printf("OK   git credential helper target: %s\n", target)
+			if shims.NativeGHStale(target) {
+				fmt.Println("WARN native gh proxy is a copy of an older extension binary (gh extension upgrade replaced it)")
+				fmt.Println("     refresh with: gh autoaccount setup --migrate")
+				issues++
+			}
 		}
 		if realGH, realErr := gitcred.RealGH(); realErr != nil {
 			fmt.Printf("WARN cannot inspect git credential helper gh: %v\n", realErr)
 			issues++
 		} else if realGH != "" { // older helpers pin no gh and resolve it at runtime
-			if info, statErr := os.Stat(realGH); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			if info, statErr := os.Stat(realGH); statErr != nil || !config.IsExecutable(info) {
 				fmt.Printf("WARN git credential helper gh is missing or not executable: %s\n", realGH)
 				fmt.Println("     repair with: gh autoaccount setup --migrate")
 				issues++

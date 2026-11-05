@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
@@ -16,8 +17,17 @@ const (
 	shimSignature   = "# gh-autoprofile-gh-shim"
 )
 
-// Dir returns the gh-autoaccount shim directory path.
+// Dir returns the gh-autoaccount shim directory path. On Windows it is a
+// directory of its own, because setup puts all of it ahead of other gh installs
+// on the user PATH.
 func Dir() (string, error) {
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" || !filepath.IsAbs(local) {
+			return "", fmt.Errorf("LOCALAPPDATA must be set to an absolute path")
+		}
+		return filepath.Join(local, "gh-autoaccount", "bin"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -31,7 +41,7 @@ func GHPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "gh"), nil
+	return filepath.Join(dir, config.ExeName("gh")), nil
 }
 
 // CheckGHReplaceable rejects unmanaged paths before setup starts a transition.
@@ -92,6 +102,9 @@ func ensureManagedOrMissing(path string) error {
 	if err != nil {
 		return fmt.Errorf("cannot inspect existing gh path: %w", err)
 	}
+	if copyProxy && managedNativeLink(path) {
+		return nil
+	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		if managedNativeLink(path) {
 			return nil
@@ -138,13 +151,17 @@ func shellQuote(value string) string {
 }
 
 // CheckPathConfigured reports whether the shim directory is on the current PATH
-// or the managed PATH block exists in common shell RC files.
+// or persistently configured: the managed PATH block in common shell RC files,
+// or the user PATH on Windows.
 func CheckPathConfigured() bool {
 	if shimDir, err := Dir(); err == nil {
 		for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
-			if entry == shimDir {
+			if entry != "" && config.SamePath(filepath.Clean(entry), shimDir) {
 				return true
 			}
+		}
+		if runtime.GOOS == "windows" {
+			return userPathHas(shimDir)
 		}
 	}
 	return CheckPathBlockInstalled()

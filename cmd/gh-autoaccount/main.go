@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/cmd"
+	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
 )
 
@@ -16,7 +16,8 @@ type exitCoder interface {
 
 func main() {
 	command := cmd.NewRootCmd()
-	if filepath.Base(os.Args[0]) == "gh" {
+	// Running under the proxy's name (gh, or gh.exe on Windows) means proxying gh.
+	if config.IsCommandName(os.Args[0], "gh") {
 		command = cmd.NewShimGHCMD()
 	}
 	if err := command.ExecuteContext(profileexec.WithProcessReplacement(context.Background())); err != nil {

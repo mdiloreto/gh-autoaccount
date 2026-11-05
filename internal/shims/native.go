@@ -1,8 +1,12 @@
 package shims
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,7 +16,40 @@ import (
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 )
 
-func NativeGHSupported() bool { return runtime.GOOS == "linux" || runtime.GOOS == "darwin" }
+func NativeGHSupported() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+}
+
+// copyProxy selects a copied proxy instead of a symlink. Windows symlinks need
+// administrator rights or Developer Mode; a copy needs neither. A variable so
+// tests on other platforms can exercise the copy path.
+var copyProxy = runtime.GOOS == "windows"
+
+// copyPrefix marks a recorded copy digest in the ownership record, which
+// otherwise lists symlink targets.
+const copyPrefix = "sha256:"
+
+func fileDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	return copyPrefix + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// proxyEntry returns the ownership record entry an installed proxy matches: its
+// symlink target, or the digest of a copy.
+func proxyEntry(path string) (string, error) {
+	if copyProxy {
+		return fileDigest(path)
+	}
+	return os.Readlink(path)
+}
 
 func nativeRecordPath() (string, error) {
 	dir, err := config.ConfigDir()
@@ -44,6 +81,14 @@ func isSymlink(path string) bool {
 }
 
 func managedNativeLink(path string) bool {
+	if copyProxy {
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+		digest, err := fileDigest(path)
+		return err == nil && slices.Contains(nativeTargets(), digest)
+	}
 	if !isSymlink(path) {
 		return false
 	}
@@ -59,6 +104,22 @@ func managedNativeLink(path string) bool {
 	return false
 }
 
+// NativeGHStale reports whether a copied proxy no longer matches the installed
+// extension binary, as happens after gh extension upgrade. A symlink follows
+// the extension and is never stale.
+func NativeGHStale(extensionBinaryPath string) bool {
+	path, err := GHPath()
+	if err != nil || !copyProxy {
+		return false
+	}
+	installed, err := fileDigest(path)
+	if err != nil {
+		return false
+	}
+	current, err := fileDigest(extensionBinaryPath)
+	return err == nil && installed != current
+}
+
 func IsNativeGHInstalled() bool {
 	path, err := GHPath()
 	return err == nil && workingNativeLink(path)
@@ -69,7 +130,7 @@ func workingNativeLink(path string) bool {
 		return false
 	}
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0
+	return err == nil && config.IsExecutable(info)
 }
 
 // InstallNativeGH installs an owned symlink without recording a real gh path.
@@ -233,7 +294,7 @@ func IsManagedGHShim(path string) bool {
 			continue
 		}
 		shimDir, err := filepath.EvalSymlinks(filepath.Dir(shim))
-		if err == nil && candidate == filepath.Join(shimDir, filepath.Base(shim)) {
+		if err == nil && config.SamePath(candidate, filepath.Join(shimDir, filepath.Base(shim))) {
 			return true
 		}
 	}
@@ -249,8 +310,8 @@ func siblingTargets(path string) []string {
 		if err != nil || other == path || !managedNativeLink(other) {
 			continue
 		}
-		if target, err := os.Readlink(other); err == nil {
-			targets = append(targets, target)
+		if entry, err := proxyEntry(other); err == nil {
+			targets = append(targets, entry)
 		}
 	}
 	return targets
@@ -276,7 +337,7 @@ func installNativeLink(path, extensionBinaryPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot inspect extension binary: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+	if !config.IsExecutable(info) {
 		return "", fmt.Errorf("extension binary is not executable")
 	}
 	if filepath.Clean(extensionBinaryPath) == filepath.Clean(path) {
@@ -306,11 +367,20 @@ func installNativeLink(path, extensionBinaryPath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(record), 0700); err != nil {
 		return "", err
 	}
+	source := extensionBinaryPath
+	if copyProxy {
+		if source, err = fileDigest(extensionBinaryPath); err != nil {
+			return "", fmt.Errorf("cannot read extension binary: %w", err)
+		}
+	}
 	siblings := siblingTargets(path)
-	targets := appendUnique([]string{extensionBinaryPath}, siblings...)
+	targets := appendUnique([]string{source}, siblings...)
+	// The old entry stays recorded until the new proxy is in place, so an
+	// interrupted install still owns whichever proxy is on disk.
 	if managedNativeLink(path) {
-		old, _ := os.Readlink(path)
-		targets = appendUnique(targets, old)
+		if old, err := proxyEntry(path); err == nil {
+			targets = appendUnique(targets, old)
+		}
 	}
 	data, err := json.Marshal(targets)
 	if err != nil {
@@ -319,21 +389,106 @@ func installNativeLink(path, extensionBinaryPath string) (string, error) {
 	if err := config.WriteAtomicMode(record, data, 0600); err != nil {
 		return "", fmt.Errorf("cannot record native shim ownership: %w", err)
 	}
-	tmp, err := os.MkdirTemp(filepath.Dir(path), ".gh-autoprofile-")
-	if err != nil {
-		return "", err
+	if copyProxy {
+		if err := placeCopy(path, extensionBinaryPath); err != nil {
+			return "", fmt.Errorf("cannot install native gh shim: %w", err)
+		}
+	} else {
+		tmp, err := os.MkdirTemp(filepath.Dir(path), ".gh-autoprofile-")
+		if err != nil {
+			return "", err
+		}
+		defer os.RemoveAll(tmp)
+		link := filepath.Join(tmp, "gh")
+		if err := os.Symlink(extensionBinaryPath, link); err != nil {
+			return "", err
+		}
+		if err := os.Rename(link, path); err != nil {
+			return "", fmt.Errorf("cannot install native gh shim: %w", err)
+		}
 	}
-	defer os.RemoveAll(tmp)
-	link := filepath.Join(tmp, "gh")
-	if err := os.Symlink(extensionBinaryPath, link); err != nil {
-		return "", err
-	}
-	if err := os.Rename(link, path); err != nil {
-		return "", fmt.Errorf("cannot install native gh shim: %w", err)
-	}
-	data, _ = json.Marshal(appendUnique([]string{extensionBinaryPath}, siblings...))
+	data, _ = json.Marshal(appendUnique([]string{source}, siblings...))
 	if err := config.WriteAtomicMode(record, data, 0600); err != nil {
 		return "", fmt.Errorf("native shim installed but cannot finalize ownership record: %w", err)
 	}
 	return path, nil
+}
+
+// placeCopy replaces path with a copy of source. Windows refuses to overwrite or
+// delete a running executable but allows renaming it, so an existing proxy is
+// moved aside under a unique name first. Set-aside copies that are no longer
+// running are removed on a later install; only names this function creates are
+// ever removed.
+func placeCopy(path, source string) error {
+	dir := filepath.Dir(path)
+	removeSetAsideCopies(dir)
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(dir, ".gh-autoprofile-*"+filepath.Ext(path))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0755); err != nil {
+		return err
+	}
+	aside := ""
+	if _, err := os.Lstat(path); err == nil {
+		if aside, err = setAsideName(dir); err != nil {
+			return err
+		}
+		if err := os.Rename(path, aside); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		if aside != "" {
+			err = errors.Join(err, os.Rename(aside, path))
+		}
+		return err
+	}
+	if aside != "" {
+		_ = os.Remove(aside)
+	}
+	return nil
+}
+
+const setAsidePrefix = ".gh-autoprofile-old-"
+
+// setAsideName reserves an unused name for a proxy moved out of the way.
+func setAsideName(dir string) (string, error) {
+	f, err := os.CreateTemp(dir, setAsidePrefix+"*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	// Rename onto a just-created empty file replaces it on every platform.
+	return name, nil
+}
+
+// removeSetAsideCopies deletes earlier set-aside proxies and temporary copies
+// left by an interrupted install; a copy still running stays until a later one.
+func removeSetAsideCopies(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), ".gh-autoprofile-") {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }

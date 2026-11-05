@@ -143,7 +143,7 @@ func ResolveToken(ctx context.Context, request TokenRequest) (string, error) {
 			return "", fmt.Errorf("invalid token command")
 		}
 		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+		if err != nil || !config.IsExecutable(info) {
 			return "", fmt.Errorf("invalid token command")
 		}
 		env := cleanEnv(os.Environ())
@@ -370,8 +370,8 @@ func ResolveGHPath() (string, error) {
 		if dir == "" {
 			continue
 		}
-		candidate := filepath.Join(dir, "gh")
-		if shimPath != "" && candidate == shimPath {
+		candidate := filepath.Join(dir, config.ExeName("gh"))
+		if shimPath != "" && config.SamePath(filepath.Clean(candidate), shimPath) {
 			continue
 		}
 		if !validGH(candidate) {
@@ -400,7 +400,7 @@ func configuredGH(key, path string) (string, error) {
 
 func validGH(path string) bool {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+	if err != nil || !config.IsExecutable(info) {
 		return false
 	}
 	if self, err := os.Executable(); err == nil {
