@@ -9,6 +9,7 @@ import (
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
+	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
 	"github.com/spf13/cobra"
 )
 
@@ -84,6 +85,11 @@ func handleGitCredentialGet(req *credentialRequest) error {
 		return nil
 	}
 
+	sessionUser, err := profileexec.SessionUser()
+	if err != nil {
+		fmt.Fprint(os.Stdout, "quit=true\n\n")
+		return err
+	}
 	registry, err := config.LoadPins()
 	if err != nil {
 		fmt.Fprint(os.Stdout, "quit=true\n\n")
@@ -104,7 +110,11 @@ func handleGitCredentialGet(req *credentialRequest) error {
 		}
 	}
 	user, selectedHost, tokenCommand := "", "", ""
-	if pin != nil {
+	// The session override names a login on github.com, like exec --user, and
+	// outranks pins there; other hosts keep their pins.
+	if requestHost, err := config.NormalizeHost(req.host); sessionUser != "" && req.host != "" && err == nil && requestHost == "github.com" {
+		user = sessionUser
+	} else if pin != nil {
 		user, selectedHost, tokenCommand = pin.User, pin.Host, pin.TokenCommand
 	} else {
 		settings, loadErr := config.LoadSettings()

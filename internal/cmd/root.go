@@ -33,7 +33,7 @@ Quick start:
 			if len(os.Args) > 1 {
 				subcmd = os.Args[1]
 			}
-			if subcmd == "setup" || subcmd == "doctor" || subcmd == "help" || subcmd == "completion" || subcmd == "credential-helper" || subcmd == "exec" || subcmd == "__shim-gh" || subcmd == "__git-credential" {
+			if subcmd == "setup" || subcmd == "doctor" || subcmd == "help" || subcmd == "completion" || subcmd == "credential-helper" || subcmd == "exec" || subcmd == "__shim-gh" || subcmd == "__git-credential" || subcmd == "current" {
 				return nil
 			}
 			warnUpgradeDrift(cmd)
@@ -50,6 +50,7 @@ Quick start:
 		NewUnpinCmd(),
 		NewListCmd(),
 		NewStatusCmd(),
+		NewCurrentCmd(),
 		NewDoctorCmd(),
 		NewCredentialHelperCmd(),
 		NewShimGHCMD(),
