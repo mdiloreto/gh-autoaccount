@@ -18,7 +18,9 @@ so it is cheap enough for a shell prompt or status line. It follows the same
 selection as plain gh: the session override (GH_AUTOACCOUNT_USER), an owner pin
 for the checkout's remote, the deepest directory pin, then the default.
 
-Example (zsh): PROMPT='$(gh autoaccount current) %~ %# '`,
+Example (zsh):
+  setopt PROMPT_SUBST
+  PROMPT='$(gh autoaccount current) %~ %# '`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			user, _, err := profileexec.SelectedAccount(".")

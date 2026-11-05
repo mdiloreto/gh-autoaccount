@@ -85,11 +85,6 @@ func handleGitCredentialGet(req *credentialRequest) error {
 		return nil
 	}
 
-	sessionUser, err := profileexec.SessionUser()
-	if err != nil {
-		fmt.Fprint(os.Stdout, "quit=true\n\n")
-		return err
-	}
 	registry, err := config.LoadPins()
 	if err != nil {
 		fmt.Fprint(os.Stdout, "quit=true\n\n")
@@ -111,8 +106,15 @@ func handleGitCredentialGet(req *credentialRequest) error {
 	}
 	user, selectedHost, tokenCommand := "", "", ""
 	// The session override names a login on github.com, like exec --user, and
-	// outranks pins there; other hosts keep their pins.
-	if requestHost, err := config.NormalizeHost(req.host); sessionUser != "" && req.host != "" && err == nil && requestHost == "github.com" {
+	// outranks pins there; other hosts keep their pins and never read it.
+	sessionUser := ""
+	if requestHost, err := config.NormalizeHost(req.host); req.host != "" && err == nil && requestHost == "github.com" {
+		if sessionUser, err = profileexec.SessionUser(); err != nil {
+			fmt.Fprint(os.Stdout, "quit=true\n\n")
+			return err
+		}
+	}
+	if sessionUser != "" {
 		user = sessionUser
 	} else if pin != nil {
 		user, selectedHost, tokenCommand = pin.User, pin.Host, pin.TokenCommand

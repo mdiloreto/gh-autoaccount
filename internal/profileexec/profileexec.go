@@ -70,7 +70,8 @@ type accountSelection struct {
 // it reads the registry, and reads the checkout's remotes only when owner pins
 // exist.
 func SelectedAccount(dir string) (string, string, error) {
-	sel, err := selectAccount(dir, Policy{Repo: &RepoQuery{}})
+	// GH matches plain gh, which also honors GH_REPO.
+	sel, err := selectAccount(dir, Policy{Repo: &RepoQuery{GH: true}})
 	return sel.user, sel.source, err
 }
 

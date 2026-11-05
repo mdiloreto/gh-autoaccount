@@ -218,6 +218,15 @@ func TestCredentialHelperSessionOverride(t *testing.T) {
 			}
 		})
 	}
+	t.Run("invalid override leaves other hosts on their pins", func(t *testing.T) {
+		unpinned, _ := credentialFixture(t, pins)
+		t.Setenv("GH_AUTOACCOUNT_USER", "-bad")
+		t.Chdir(unpinned)
+		out, err := runCredentialGet(t, "protocol=https\nhost=ghe.example.test\npath=ghe-org/x.git\n\n")
+		if want := "username=x-access-token\npassword=tok-dana\n\n"; err != nil || out != want {
+			t.Fatalf("got %q (%v), want %q", out, err, want)
+		}
+	})
 	t.Run("invalid override fails closed", func(t *testing.T) {
 		unpinned, _ := credentialFixture(t, pins)
 		t.Setenv("GH_AUTOACCOUNT_USER", "-bad")

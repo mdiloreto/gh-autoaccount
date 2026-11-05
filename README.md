@@ -146,7 +146,8 @@ directory, or nothing. It resolves no credential and makes no network call, so i
 fits a prompt or status line:
 
 ```bash
-PROMPT='$(gh autoaccount current) %~ %# '    # zsh
+setopt PROMPT_SUBST                          # zsh
+PROMPT='$(gh autoaccount current) %~ %# '
 ```
 
 To act as one account for a while, set `GH_AUTOACCOUNT_USER` in that shell. Plain

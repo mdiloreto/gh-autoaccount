@@ -65,6 +65,12 @@ func TestCurrentPrintsSelectionWithoutResolvingCredentials(t *testing.T) {
 	if got := current(unpinned); got != "" {
 		t.Fatalf("no selection must print nothing: %q", got)
 	}
+	// Plain gh honors GH_REPO over the checkout's remote, and so must current.
+	t.Setenv("GH_REPO", "work-org/y")
+	if got := current(unpinned); got != "bob\n" {
+		t.Fatalf("owner pin from GH_REPO: %q", got)
+	}
+	t.Setenv("GH_REPO", "")
 	if err := config.SaveSettings(config.Settings{DefaultUser: "alice"}); err != nil {
 		t.Fatal(err)
 	}
