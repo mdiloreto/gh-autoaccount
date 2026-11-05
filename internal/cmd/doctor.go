@@ -67,7 +67,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load setup settings: %w", err)
 	}
-	issues := 0
+	// Problems that setup --migrate cannot fix are counted separately, so the
+	// closing hint never sends the user to a command that changes nothing.
+	issues, manualIssues := 0, 0
 	fmt.Println("gh-autoaccount doctor")
 	fmt.Println("=====================")
 
@@ -75,6 +77,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if !shims.NativeGHSupported() {
 		fmt.Println("WARN native gh routing is unsupported on this platform")
 		issues++
+		manualIssues++
 	}
 	if shims.IsNativeGHInstalled() {
 		fmt.Println("OK   native gh proxy installed")
@@ -182,7 +185,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			fmt.Println("OK   gh account entries are valid")
 		} else {
 			fmt.Printf("WARN %d gh account entrie(s) are invalid\n", invalidCount)
+			fmt.Println("     log in again with: gh auth login")
 			issues++
+			manualIssues++
 		}
 
 	}
@@ -229,6 +234,31 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// A repository can clear the global helper list; check this directory for
+	// every pinned host whose global helper is in place (others are reported above).
+	if cwd, err := os.Getwd(); err == nil {
+		hosts, _ := gitcred.Hosts(registry)
+		for _, host := range hosts {
+			if !gitcred.CheckConfiguredHost(host) {
+				continue
+			}
+			state, err := gitcred.ManagedHelper(cwd, host)
+			switch {
+			case err != nil:
+				fmt.Printf("WARN cannot read the Git credential helper list for %s in %s: %v\n", host, cwd, err)
+				issues++
+				manualIssues++
+			case !state.Active && state.ResetBy != "":
+				fmt.Printf("WARN in %s, %s clears the Git credential helper list for %s, so Git HTTPS there skips gh-autoaccount\n", cwd, state.ResetBy, host)
+				fmt.Println("     remove that entry, or add the managed helper after it")
+				issues++
+				manualIssues++
+			case state.RunsAfter != "":
+				fmt.Printf("INFO in %s, Git asks %s for %s credentials before gh-autoaccount\n", cwd, state.RunsAfter, host)
+			}
+		}
+	}
+
 	var leftovers []string
 	for _, pin := range registry.Pins {
 		if pin.Mode != config.ModeWrapper {
@@ -242,22 +272,61 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			leftovers = append(leftovers, filepath.Join(pin.Dir, ".envrc")+" has a retired managed block")
 		}
 	}
-	leftovers = append(leftovers, legacy.LeftoverFiles()...)
+	// setup removes managed hook blocks itself, except in external-shell mode,
+	// where the RC files belong to the user.
+	hookRefs, scanComplete := legacy.HookReferences()
 	if rcFiles, err := legacy.RCFiles(); err == nil {
 		for _, rc := range rcFiles {
-			if legacy.ReferencesHook(rc) {
-				leftovers = append(leftovers, rc+" sources the retired hook")
+			if !legacy.HasHookSource(rc) {
+				continue
+			}
+			if settings.ExternalShell {
+				hookRefs = append(hookRefs, rc)
+			} else {
+				leftovers = append(leftovers, rc+" has the retired hook source block")
 			}
 		}
 	}
-	if len(leftovers) == 0 {
-		fmt.Println("OK   no files left from the retired direnv modes")
-	} else {
+	hookPath, _ := legacy.ShellHookPath()
+	_, hookErr := os.Lstat(hookPath)
+	hookExists := hookErr == nil
+	// setup keeps the hook while a shell may still source it.
+	hookKept := hookExists && (settings.ExternalShell || len(hookRefs) > 0 || !scanComplete)
+	for _, path := range legacy.LeftoverFiles() {
+		if path != hookPath || !hookKept {
+			leftovers = append(leftovers, path)
+		}
+	}
+	if len(leftovers) > 0 {
 		fmt.Println("WARN files left from the retired direnv modes:")
 		for _, item := range leftovers {
 			fmt.Printf("     %s\n", item)
 		}
 		issues++
+	}
+	switch {
+	case !hookExists && len(hookRefs) > 0:
+		fmt.Printf("WARN your shell config still sources the retired hook %s, which no longer exists\n", hookPath)
+		for _, rc := range hookRefs {
+			fmt.Printf("     referenced from: %s\n", rc)
+		}
+		fmt.Println("     remove the lines that source it")
+		issues++
+		manualIssues++
+	case hookKept:
+		fmt.Printf("WARN the retired hook %s is kept because your shell config may still source it\n", hookPath)
+		for _, rc := range hookRefs {
+			fmt.Printf("     referenced from: %s\n", rc)
+		}
+		if !scanComplete {
+			fmt.Println("     some shell config files could not be fully checked")
+		}
+		fmt.Println("     remove the lines that source it, then delete the file; setup --migrate leaves it in place")
+		issues++
+		manualIssues++
+	}
+	if len(leftovers) == 0 && !hookKept && len(hookRefs) == 0 {
+		fmt.Println("OK   no files left from the retired direnv modes")
 	}
 
 	permIssues := configPermIssues()
@@ -280,6 +349,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Println("\nRun `gh autoaccount setup --migrate` to fix detected issues.")
+	fmt.Println()
+	if issues > manualIssues {
+		fmt.Println("Run `gh autoaccount setup --migrate` to fix detected issues.")
+	}
+	if manualIssues > 0 {
+		fmt.Println("Some issues need the manual steps shown with them; setup --migrate does not change those.")
+	}
 	return nil
 }

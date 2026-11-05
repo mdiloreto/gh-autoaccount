@@ -566,22 +566,21 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 			cleaned++
 		}
 	}
-	var sourcedBy []string
-	if rcFiles, err := legacy.RCFiles(); err == nil {
+	if rcFiles, err := legacy.RCFiles(); err == nil && !externalShell {
 		for _, rc := range rcFiles {
-			if !externalShell && legacy.HasHookSource(rc) {
-				if _, err := legacy.RemoveHookSource(rc); err != nil {
-					review = append(review, fmt.Sprintf("%s: %v", rc, err))
-				} else {
-					cleaned++
-				}
+			if !legacy.HasHookSource(rc) {
+				continue
 			}
-			// A line outside the managed block still sources the hook.
-			if legacy.ReferencesHook(rc) {
-				sourcedBy = append(sourcedBy, rc)
+			if _, err := legacy.RemoveHookSource(rc); err != nil {
+				review = append(review, fmt.Sprintf("%s: %v", rc, err))
+			} else {
+				cleaned++
 			}
 		}
 	}
+	// Whatever still mentions the hook after the managed blocks are gone was
+	// written by hand; an incomplete scan counts as still sourced.
+	sourcedBy, scanComplete := legacy.HookReferences()
 	if removed, err := legacy.RemoveLibrary(); err != nil {
 		review = append(review, err.Error())
 	} else if removed {
@@ -590,7 +589,7 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 	hookPath, _ := legacy.ShellHookPath()
 	keptHook := ""
 	if _, err := os.Lstat(hookPath); err == nil {
-		if externalShell || len(sourcedBy) > 0 {
+		if externalShell || len(sourcedBy) > 0 || !scanComplete {
 			// Deleting a file a shell still sources would break shell startup.
 			keptHook = hookPath
 		} else if removed, err := legacy.RemoveHook(); err != nil {
@@ -619,6 +618,9 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 		fmt.Printf("    Remove the line that sources %s from your shell config, then delete that file.\n", keptHook)
 		if len(sourcedBy) > 0 {
 			fmt.Printf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
+		}
+		if !scanComplete {
+			fmt.Println("    Some shell config files could not be fully checked, so it is kept to be safe.")
 		}
 	}
 	return clean

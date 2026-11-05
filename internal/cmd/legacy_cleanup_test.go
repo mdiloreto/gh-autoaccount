@@ -214,6 +214,47 @@ func TestSetupKeepsHookSourcedOutsideManagedBlock(t *testing.T) {
 	}
 }
 
+// A modular shell config outside the home startup files can still source the
+// hook; RC-managed setup must keep it and say where it is referenced, and doctor
+// must point at the manual step rather than another migrate.
+func TestSetupKeepsHookSourcedFromModularConfig(t *testing.T) {
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	b := seedBetaHome(t, false)
+	tool := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "shell", "tools", "gh-autoprofile.zsh")
+	if err := os.MkdirAll(filepath.Dir(tool), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tool, []byte("[ -f \"$HOME/.config/gh-autoprofile/hook.sh\" ] && source \"$HOME/.config/gh-autoprofile/hook.sh\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_DIRENV_LOG", filepath.Join(b.home, "direnv-calls"))
+	if err := os.WriteFile(filepath.Join(b.home, "bin", "direnv"), []byte("#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> \"$TEST_DIRENV_LOG\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureOnboarding(t, NewSetupCmd().Execute)
+	if gone(t, b.hook) {
+		t.Fatal("hook deleted while a modular shell config still sources it")
+	}
+	if !strings.Contains(out, "It is referenced from: ") || !strings.Contains(out, tool) {
+		t.Fatalf("setup does not name the referencing file:\n%s", out)
+	}
+
+	// With the shim first on PATH, the kept hook is the only remaining issue.
+	t.Setenv("PATH", filepath.Join(b.home, ".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	doctor := captureOnboarding(t, NewDoctorCmd().Execute)
+	for _, want := range []string{"is kept because your shell config may still source it", "referenced from: " + tool} {
+		if !strings.Contains(doctor, want) {
+			t.Fatalf("doctor lacks %q:\n%s", want, doctor)
+		}
+	}
+	if strings.Contains(doctor, "WARN files left from the retired direnv modes") || strings.Contains(doctor, "Run `gh autoaccount setup --migrate`") || !strings.Contains(doctor, "Some issues need the manual steps shown with them") {
+		t.Fatalf("a kept hook is a manual step, not something migrate removes:\n%s", doctor)
+	}
+}
+
 func TestSetupExternalShellKeepsHookAndRC(t *testing.T) {
 	if !shims.NativeGHSupported() {
 		t.Skip("native routing unsupported")
@@ -293,7 +334,8 @@ func TestDoctorReportsLeftoversAndPassesOnceGone(t *testing.T) {
 		filepath.Join(b.wrapperDir, ".envrc") + " has a retired managed block",
 		b.lib,
 		b.hook,
-		b.rc + " sources the retired hook",
+		// A managed block is migrate's to remove, not a manual reference.
+		b.rc + " has the retired hook source block",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor lacks %q:\n%s", want, out)

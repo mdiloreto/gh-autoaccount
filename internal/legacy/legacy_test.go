@@ -340,3 +340,92 @@ func TestCleanupManagedEnvrcRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestHookReferences(t *testing.T) {
+	const line = "source \"$HOME/.config/gh-autoprofile/hook.sh\"\n"
+	setup := func(t *testing.T) (home, config string) {
+		home = legacyHome(t)
+		t.Setenv("ZDOTDIR", "")
+		return home, filepath.Join(home, "config")
+	}
+	t.Run("modular configs, symlinks and ZDOTDIR", func(t *testing.T) {
+		home, config := setup(t)
+		dotfiles := filepath.Join(home, "dotfiles")
+		zdot := filepath.Join(home, "zdot")
+		t.Setenv("ZDOTDIR", zdot)
+		want := []string{
+			filepath.Join(config, "shell", "tools", "gh-autoprofile.zsh"),
+			filepath.Join(config, "bash", "init.bash"),
+			filepath.Join(zdot, ".zshrc"),
+		}
+		for _, path := range want {
+			write(t, path, line, 0644)
+		}
+		// chezmoi-style links: a linked file, and a linked directory.
+		write(t, filepath.Join(dotfiles, "linked.zsh"), line, 0644)
+		write(t, filepath.Join(dotfiles, "zsh", "conf.d", "x.zsh"), line, 0644)
+		if err := os.Symlink(filepath.Join(dotfiles, "linked.zsh"), filepath.Join(config, "shell", "linked.zsh")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(dotfiles, "zsh"), filepath.Join(config, "zsh")); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, filepath.Join(config, "shell", "linked.zsh"), filepath.Join(config, "zsh", "conf.d", "x.zsh"))
+		// Not sourced by zsh, so not scanned even though it mentions the hook.
+		write(t, filepath.Join(zdot, "notes.txt"), line, 0644)
+		// A managed block is removed by setup itself, so it is not a reference.
+		write(t, filepath.Join(home, ".bashrc"), "# gh-autoprofile-hook:start\n"+line+"# gh-autoprofile-hook:end\n", 0644)
+		// A loop back up the tree must terminate.
+		if err := os.Symlink(filepath.Join(config, "shell"), filepath.Join(config, "shell", "loop")); err != nil {
+			t.Fatal(err)
+		}
+
+		refs, complete := HookReferences()
+		if !complete {
+			t.Fatalf("scan reported incomplete: %v", refs)
+		}
+		got := map[string]bool{}
+		for _, r := range refs {
+			got[r] = true
+		}
+		for _, path := range want {
+			if !got[path] {
+				t.Errorf("reference not found: %s (got %v)", path, refs)
+			}
+		}
+		for _, path := range []string{filepath.Join(zdot, "notes.txt"), filepath.Join(home, ".bashrc")} {
+			if got[path] {
+				t.Errorf("not a hand-written reference: %s", path)
+			}
+		}
+	})
+	t.Run("limits and errors make the scan incomplete", func(t *testing.T) {
+		for name, prepare := range map[string]func(t *testing.T, config string){
+			"too deep": func(t *testing.T, config string) {
+				write(t, filepath.Join(config, "shell", "a", "b", "c", "d", "e", "f", "g", "deep.zsh"), "echo\n", 0644)
+			},
+			"file too large": func(t *testing.T, config string) {
+				write(t, filepath.Join(config, "shell", "big.zsh"), strings.Repeat("x", scanMaxFile+1), 0644)
+			},
+			"unreadable directory": func(t *testing.T, config string) {
+				dir := filepath.Join(config, "shell", "private")
+				write(t, filepath.Join(dir, "x.zsh"), "echo\n", 0644)
+				if err := os.Chmod(dir, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(dir, 0700) })
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				if name == "unreadable directory" && os.Geteuid() == 0 {
+					t.Skip("root can read any directory")
+				}
+				_, config := setup(t)
+				prepare(t, config)
+				if _, complete := HookReferences(); complete {
+					t.Fatal("scan must report incomplete")
+				}
+			})
+		}
+	})
+}

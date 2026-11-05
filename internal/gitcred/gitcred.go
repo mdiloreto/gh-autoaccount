@@ -3,8 +3,10 @@ package gitcred
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -324,6 +326,151 @@ func replaceGlobalValues(key string, helpers []string) error {
 
 func isManagedHelper(helper, path string) bool {
 	return helper == primaryHelper(path) || helper == "!"+path+" get"
+}
+
+// HelperEntry is one credential helper in the list Git builds for a URL, with
+// the config file it came from.
+type HelperEntry struct {
+	Value  string
+	Origin string
+}
+
+// EffectiveHelpers returns the helpers Git runs for a host-wide request to
+// https://host in dir, in order. Git reads every matching credential.helper and
+// credential.<url>.helper entry across system, global, local and worktree
+// config in that order, and an empty value clears the list built so far; resetBy
+// is the origin of the last clearing entry. pathScoped lists sections for this
+// host that name a repository path: they change the list only for requests
+// under that path.
+func EffectiveHelpers(dir, host string) (chain []HelperEntry, resetBy string, pathScoped []string, err error) {
+	host, err = config.NormalizeHost(host)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	out, err := exec.Command("git", "-C", dir, "config", "--show-origin", "-z", "--get-regexp", `^credential\..*helper$`).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, "", nil, nil // no helper configured anywhere
+		}
+		return nil, "", nil, fmt.Errorf("cannot read Git credential configuration: %w", err)
+	}
+	// Records are "origin NUL key LF value NUL", or "origin NUL key NUL" for a
+	// key written without "=".
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		origin := strings.TrimPrefix(fields[i], "file:")
+		key, value, hasValue := strings.Cut(fields[i+1], "\n")
+		match := helperKeyMatch(key, host)
+		if match == noMatch {
+			continue
+		}
+		if !hasValue {
+			return nil, "", nil, fmt.Errorf("%s has %s without a value, which Git refuses to use", origin, key)
+		}
+		if match == pathMatch {
+			pathScoped = append(pathScoped, origin+": "+key)
+			continue
+		}
+		if value == "" {
+			chain, resetBy = nil, origin
+			continue
+		}
+		chain = append(chain, HelperEntry{Value: value, Origin: origin})
+	}
+	return chain, resetBy, pathScoped, nil
+}
+
+type keyMatch int
+
+const (
+	noMatch   keyMatch = iota
+	hostMatch          // applies to every request for the host
+	pathMatch          // applies only to requests under a repository path
+)
+
+// helperKeyMatch classifies a credential helper key for https://host, following
+// Git's URL matching: the generic key, or a URL section with the same scheme (or
+// none), a host that matches label by label (a "*" label matches any one
+// label), and the default port. A section with a user applies only to requests
+// for that user, so it is not counted.
+func helperKeyMatch(key, host string) keyMatch {
+	if key == "credential.helper" {
+		return hostMatch
+	}
+	section, ok := strings.CutPrefix(key, "credential.")
+	if !ok {
+		return noMatch
+	}
+	section, ok = strings.CutSuffix(section, ".helper")
+	if !ok {
+		return noMatch
+	}
+	if !strings.Contains(section, "://") {
+		section = "https://" + section // a context without a scheme matches any
+	}
+	u, err := url.Parse(section)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.User != nil || !hostMatches(u.Hostname(), host) {
+		return noMatch
+	}
+	if port := u.Port(); port != "" && port != "443" {
+		return noMatch
+	}
+	if path.Clean("/"+u.Path) != "/" {
+		return pathMatch
+	}
+	return hostMatch
+}
+
+// hostMatches compares a config host with a request host label by label,
+// case-insensitively; a "*" label in the config matches any single label.
+func hostMatches(pattern, host string) bool {
+	want, got := strings.Split(pattern, "."), strings.Split(host, ".")
+	if len(want) != len(got) {
+		return false
+	}
+	for i := range want {
+		if want[i] != "*" && !strings.EqualFold(want[i], got[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// HelperState describes the managed helper in the list Git builds for a
+// host-wide request in a directory.
+type HelperState struct {
+	Active     bool     // the managed helper is in the list
+	RunsAfter  string   // the helper Git asks first, when it is not ours
+	ResetBy    string   // config that cleared the list, when ours is missing
+	PathScoped []string // sections that change the list for some repositories
+}
+
+// ManagedHelper reports where the managed helper stands in the list Git runs
+// for https://host in dir. Being in the list does not guarantee Git asks it: an
+// earlier helper that answers wins.
+func ManagedHelper(dir, host string) (HelperState, error) {
+	var state HelperState
+	helperPath, err := HelperPath()
+	if err != nil {
+		return state, err
+	}
+	chain, resetBy, pathScoped, err := EffectiveHelpers(dir, host)
+	if err != nil {
+		return state, err
+	}
+	state.PathScoped = pathScoped
+	for i, entry := range chain {
+		if isManagedHelper(entry.Value, helperPath) {
+			state.Active = true
+			if i > 0 {
+				state.RunsAfter = chain[0].Value
+			}
+			return state, nil
+		}
+	}
+	state.ResetBy = resetBy
+	return state, nil
 }
 
 // CheckConfigured reports whether git is configured to use the managed helper.
