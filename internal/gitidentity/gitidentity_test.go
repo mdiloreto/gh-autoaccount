@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -197,6 +198,148 @@ func TestIdentityEffectiveGlobalXDG(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".gitconfig")); !os.IsNotExist(err) {
 		t.Fatal("created ~/.gitconfig instead of updating effective XDG global")
+	}
+}
+
+func TestPrepareGlobalWindowsUsesHome(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific Git home resolution")
+	}
+	home, profile := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	checkGlobal := func(t *testing.T, want string) {
+		t.Helper()
+		global, lock, err := prepareGlobal(filepath.Join(home, "include.gitconfig"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(lock); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.EqualFold(global, want) {
+			t.Fatalf("global = %q, want %q", global, want)
+		}
+	}
+	t.Run("gitconfig", func(t *testing.T) {
+		checkGlobal(t, filepath.Join(home, ".gitconfig"))
+	})
+	t.Run("XDG fallback", func(t *testing.T) {
+		xdg := filepath.Join(home, ".config", "git", "config")
+		if err := os.MkdirAll(filepath.Dir(xdg), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(xdg, []byte("# XDG config\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(home, ".gitconfig")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		checkGlobal(t, xdg)
+	})
+}
+
+func TestPrepareGlobalIgnoresRelativeXDGConfigHome(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	for _, tc := range []struct {
+		name            string
+		homeGit, xdgGit bool
+		wantXDG         bool
+	}{
+		{name: "default gitconfig"},
+		{name: "existing default XDG", xdgGit: true, wantXDG: true},
+		{name: "gitconfig takes precedence", homeGit: true, xdgGit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, cwd := t.TempDir(), t.TempDir()
+			var err error
+			home, err = filepath.EvalSymlinks(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			if got, err := os.UserHomeDir(); err != nil || got != home {
+				t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+			}
+			t.Setenv("XDG_CONFIG_HOME", ".")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("GH_CONFIG_DIR", "")
+			t.Setenv("GIT_CONFIG_GLOBAL", "")
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			t.Setenv("GIT_CONFIG_PARAMETERS", "")
+			t.Chdir(cwd)
+			foreign := filepath.Join(cwd, "git", "config")
+			if err := os.MkdirAll(filepath.Dir(foreign), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(foreign, []byte("# repository config\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.homeGit {
+				if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("# home\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.xdgGit {
+				xdg := filepath.Join(home, ".config", "git", "config")
+				if err := os.MkdirAll(filepath.Dir(xdg), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(xdg, []byte("# xdg\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Startup normalization unsets the relative XDG config root.
+			if err := config.NormalizeEnv(); err != nil {
+				t.Fatal(err)
+			}
+			global, lock, err := prepareGlobal(filepath.Join(home, "include.gitconfig"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(lock) })
+			want := filepath.Join(home, ".gitconfig")
+			if tc.wantXDG {
+				want = filepath.Join(home, ".config", "git", "config")
+			}
+			if !config.SamePath(global, want) {
+				t.Fatalf("global = %q, want %q", global, want)
+			}
+			if _, err := os.Stat(foreign + ".lock"); !os.IsNotExist(err) {
+				t.Fatalf("repository config was locked: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrepareGlobalKeepsExplicitRelativeOverride(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	cwd := t.TempDir()
+	t.Setenv("HOME", "relative-home")
+	t.Setenv("USERPROFILE", "relative-home")
+	t.Setenv("XDG_CONFIG_HOME", ".")
+	t.Setenv("GIT_CONFIG_GLOBAL", "custom.gitconfig")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	t.Chdir(cwd)
+	global, lock, err := prepareGlobal(filepath.Join(cwd, "include.gitconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(lock) })
+	if global != "custom.gitconfig" {
+		t.Fatalf("global = %q, want explicit relative GIT_CONFIG_GLOBAL", global)
 	}
 }
 

@@ -85,22 +85,96 @@ func parseMisePath(out string) ([]string, error) {
 	return []string{out}, nil
 }
 
-// miseRegistered reads whether dir is currently in mise's global env._.path, so
-// rollback can restore exactly what was there rather than infer it. A missing
-// key is mise's way of saying the list is empty.
-func miseRegistered(dir string) (bool, error) {
+// miseEntries reads mise's global env._.path; a missing key means an empty list.
+func miseEntries() ([]string, error) {
 	out, err := runMise("config", "get", "-g", "env._.path")
 	if err != nil {
 		if strings.Contains(err.Error(), "Key not found") {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
-	entries, err := parseMisePath(out)
-	if err != nil {
-		return false, err
+	return parseMisePath(out)
+}
+
+// legacyMiseGHDirs finds relative registrations left by pre-normalization setup runs.
+func legacyMiseGHDirs(entries []string) []string {
+	var legacy []string
+	for _, entry := range entries {
+		if filepath.IsAbs(entry) {
+			continue
+		}
+		// mise expands these outside the working directory, so they are not the
+		// relative registration this tool created.
+		if entry != "" {
+			switch entry[0] {
+			case '~', '$', '%':
+				continue
+			}
+		}
+		clean := filepath.Clean(entry)
+		if filepath.Base(clean) == "bin" && filepath.Base(filepath.Dir(clean)) == "gh-autoaccount" {
+			legacy = append(legacy, entry)
+		}
 	}
-	return slices.Contains(entries, dir), nil
+	return legacy
+}
+
+func countMiseEntry(entries []string, want string) int {
+	count := 0
+	for _, entry := range entries {
+		if entry == want {
+			count++
+		}
+	}
+	return count
+}
+
+// removeLegacyMiseEntries removes each legacy entry and returns the entries whose
+// parsed count actually decreased, in original order. The caller restores them
+// with one undo so rollback preserves their relative order.
+func removeLegacyMiseEntries(entries []string) ([]string, error) {
+	var removed []string
+	for _, entry := range entries {
+		before, err := miseEntries()
+		if err != nil {
+			return removed, err
+		}
+		beforeCount := countMiseEntry(before, entry)
+		if beforeCount == 0 {
+			continue
+		}
+		removeErr := miseUnregister(entry)
+		after, readErr := miseEntries()
+		if readErr != nil {
+			return removed, readErr
+		}
+		removedCount := beforeCount - countMiseEntry(after, entry)
+		for i := 0; i < removedCount; i++ {
+			removed = append(removed, entry)
+		}
+		if removeErr != nil {
+			return removed, fmt.Errorf("cannot unregister legacy gh-only shim directory from mise: %w", removeErr)
+		}
+		if removedCount <= 0 {
+			return removed, fmt.Errorf("mise did not remove legacy gh-only shim entry %q; remove it manually from mise's global config", entry)
+		}
+	}
+	return removed, nil
+}
+
+// undoLegacyMiseRemovals restores removed entries through one undo so rollback
+// preserves their original relative order.
+func undoLegacyMiseRemovals(removed []string) func() error {
+	return func() error {
+		var errs []error
+		for _, entry := range removed {
+			if err := miseRegister(entry); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
 }
 
 // applyMise reconciles the gh-only shim and its mise registration with the
@@ -125,17 +199,26 @@ func applyMise(enable bool, extensionBinary string, addUndo func(func() error)) 
 	if err != nil {
 		return "", err
 	}
-	registered := false
+	var entries []string
 	_, lookErr := miseExecutable()
 	if lookErr == nil {
-		if registered, err = miseRegistered(dir); err != nil {
+		if entries, err = miseEntries(); err != nil {
 			return "", fmt.Errorf("cannot read mise's global config: %w", err)
 		}
 	}
+	registered := slices.Contains(entries, dir)
+	legacy := legacyMiseGHDirs(entries)
 
 	if !enable {
 		if lookErr != nil {
-			return "mise not found on PATH; remove the env._.path entry for " + dir + " from mise's global config if it exists", removeMiseShim(snapshot, addUndo)
+			return "mise not found on PATH; remove the env._.path entry for " + dir + " and any legacy relative gh-autoaccount/bin entry from mise's global config if it exists", removeMiseShim(snapshot, addUndo)
+		}
+		legacyRemoved, legacyErr := removeLegacyMiseEntries(legacy)
+		if len(legacyRemoved) > 0 {
+			addUndo(undoLegacyMiseRemovals(legacyRemoved))
+		}
+		if legacyErr != nil {
+			return "", legacyErr
 		}
 		if registered {
 			addUndo(func() error { return miseRegister(dir) })
@@ -155,7 +238,14 @@ func applyMise(enable bool, extensionBinary string, addUndo func(func() error)) 
 		return "", fmt.Errorf("cannot install gh-only shim for mise: %w", err)
 	}
 	if lookErr != nil {
-		return "mise not found on PATH; the gh-only shim was refreshed but mise's config was not checked", nil
+		return "mise not found on PATH; the gh-only shim was refreshed but mise's config was not checked; remove any legacy relative gh-autoaccount/bin entry manually once mise is available", nil
+	}
+	legacyRemoved, legacyErr := removeLegacyMiseEntries(legacy)
+	if len(legacyRemoved) > 0 {
+		addUndo(undoLegacyMiseRemovals(legacyRemoved))
+	}
+	if legacyErr != nil {
+		return "", legacyErr
 	}
 	if !registered {
 		addUndo(func() error { return miseUnregister(dir) })
@@ -215,18 +305,18 @@ func checkGHOnPath(settings config.Settings) (verified bool, issues int) {
 	}
 	if shims.IsManagedGHShim(resolved) {
 		fmt.Println("OK   plain gh resolves to the managed shim")
-		fmt.Printf("     path: %s\n", resolved)
+		doctorPrintf("     path: %s\n", resolved)
 	} else {
-		fmt.Printf("WARN plain gh resolves to %s, not the managed shim\n", resolved)
-		fmt.Println("     " + shadowFixHint(resolved, settings))
+		doctorPrintf("WARN plain gh resolves to %s, not the managed shim\n", resolved)
+		doctorPrintf("     %s\n", shadowFixHint(resolved, settings))
 		issues++
 	}
 	if runtime.GOOS == "windows" {
 		// This process may predate a PATH change; new shells read the registry.
 		if gh, err := shims.NewProcessGH(); err == nil && !shims.IsManagedGHShim(gh) {
-			fmt.Printf("WARN new shells find %s first: Windows searches the machine PATH before the user PATH\n", gh)
+			doctorPrintf("WARN new shells find %s first: Windows searches the machine PATH before the user PATH\n", gh)
 			if dir, err := shims.Dir(); err == nil {
-				fmt.Println("     as administrator, run: " + machinePathCommand(dir))
+				doctorPrintf("     as administrator, run: %s\n", machinePathCommand(dir))
 			}
 			issues++
 		}
@@ -238,12 +328,12 @@ func checkGHOnPath(settings config.Settings) (verified bool, issues int) {
 	inMise, err := runMise("exec", "--", "sh", "-c", "command -v gh")
 	switch {
 	case err != nil:
-		fmt.Printf("INFO cannot check gh inside mise exec: %v\n", err)
+		doctorPrintf("INFO cannot check gh inside mise exec: %v\n", err)
 	case shims.IsManagedGHShim(inMise):
 		fmt.Println("OK   gh inside mise exec resolves to the managed shim")
 	default:
-		fmt.Printf("WARN gh inside mise exec resolves to %s, not the managed shim\n", inMise)
-		fmt.Println("     " + shadowFixHint(inMise, settings))
+		doctorPrintf("WARN gh inside mise exec resolves to %s, not the managed shim\n", inMise)
+		doctorPrintf("     %s\n", shadowFixHint(inMise, settings))
 		issues++
 	}
 	return true, issues

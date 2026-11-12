@@ -224,6 +224,9 @@ func presentLabel(present bool) string {
 	return "(not set)"
 }
 
+// SanitizeOutput removes terminal control characters from text printed outside Cobra.
+func SanitizeOutput(value string) string { return sanitizeStatusValue(value) }
+
 func sanitizeStatusValue(value string) string {
 	var result strings.Builder
 	result.Grow(len(value))

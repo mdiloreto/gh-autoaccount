@@ -145,13 +145,9 @@ func InstallNativeGH(extensionBinaryPath string) (string, error) {
 // MiseGHDir is a directory that holds only the gh shim. mise can put it ahead of
 // its tool directories without also reordering every other binary it manages.
 func MiseGHDir() (string, error) {
-	data := os.Getenv("XDG_DATA_HOME")
-	if data == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		data = filepath.Join(home, ".local", "share")
+	data, err := config.DataHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(data, "gh-autoaccount", "bin"), nil
 }

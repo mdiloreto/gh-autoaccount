@@ -151,8 +151,14 @@ func TestRealGHManagementAliasCannotBypassMissingCredential(t *testing.T) {
 		}
 	}
 	originalEnv := append([]string(nil), env...)
+	// The relative-xdg case must not also make the planted repository extension
+	// the trusted default. A clean HOME keeps that fixture untrusted.
+	trustedHome := filepath.Join(root, "trusted-home")
+	if err := os.MkdirAll(trustedHome, 0700); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct{ name, xdg, home string }{
-		{"relative-xdg", ".", home}, {"relative-home", "", "."},
+		{"relative-xdg", ".", trustedHome}, {"relative-home", "", "."},
 	} {
 		env = setEnv(append([]string(nil), originalEnv...), "XDG_DATA_HOME", tc.xdg)
 		env = setEnv(env, "HOME", tc.home)

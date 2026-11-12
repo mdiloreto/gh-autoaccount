@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
@@ -14,6 +15,15 @@ import (
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 	"github.com/spf13/cobra"
 )
+
+func doctorPrintf(format string, args ...any) {
+	output := sanitizeStatusValue(fmt.Sprintf(format, args...))
+	// Preserve only the trusted format's trailing newline.
+	if strings.HasSuffix(format, "\n") {
+		output += "\n"
+	}
+	fmt.Print(output)
+}
 
 // configPermIssues returns human-readable warnings for existing config paths
 // whose permissions are looser than the documented hardening targets (config
@@ -86,13 +96,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		issues++
 	}
 	if shimPathErr == nil {
-		fmt.Printf("     path: %s\n", shimPath)
+		doctorPrintf("     path: %s\n", shimPath)
 	}
 	if realGH, resolveErr := ghauth.ResolveGHPath(); resolveErr != nil {
-		fmt.Printf("WARN cannot discover real gh at runtime: %v\n", resolveErr)
+		doctorPrintf("WARN cannot discover real gh at runtime: %v\n", resolveErr)
 		issues++
 	} else {
-		fmt.Printf("OK   runtime real gh: %s\n", realGH)
+		doctorPrintf("OK   runtime real gh: %s\n", realGH)
 	}
 
 	if settings.Mise {
@@ -103,7 +113,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			issues++
 		}
 		if dir, err := shims.MiseGHDir(); err == nil {
-			fmt.Printf("     path: %s\n", dir)
+			doctorPrintf("     path: %s\n", dir)
 		}
 	}
 
@@ -128,16 +138,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	helperUsable := helperErr == nil && statErr == nil && config.IsExecutable(helperInfo)
 	if helperUsable {
 		fmt.Println("OK   git credential helper installed")
-		fmt.Printf("     path: %s\n", helperPath)
+		doctorPrintf("     path: %s\n", helperPath)
 		if target, targetErr := gitcred.Target(); targetErr != nil {
-			fmt.Printf("WARN cannot inspect git credential helper target: %v\n", targetErr)
+			doctorPrintf("WARN cannot inspect git credential helper target: %v\n", targetErr)
 			issues++
 		} else if info, statErr := os.Stat(target); statErr != nil || !config.IsExecutable(info) {
-			fmt.Printf("WARN git credential helper target is missing or not executable: %s\n", target)
+			doctorPrintf("WARN git credential helper target is missing or not executable: %s\n", target)
 			fmt.Println("     repair with: gh autoaccount setup --migrate")
 			issues++
 		} else {
-			fmt.Printf("OK   git credential helper target: %s\n", target)
+			doctorPrintf("OK   git credential helper target: %s\n", target)
 			if shims.NativeGHStale(target) {
 				fmt.Println("WARN native gh proxy is a copy of an older extension binary (gh extension upgrade replaced it)")
 				fmt.Println("     refresh with: gh autoaccount setup --migrate")
@@ -145,15 +155,15 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if realGH, realErr := gitcred.RealGH(); realErr != nil {
-			fmt.Printf("WARN cannot inspect git credential helper gh: %v\n", realErr)
+			doctorPrintf("WARN cannot inspect git credential helper gh: %v\n", realErr)
 			issues++
 		} else if realGH != "" { // older helpers pin no gh and resolve it at runtime
 			if info, statErr := os.Stat(realGH); statErr != nil || !config.IsExecutable(info) {
-				fmt.Printf("WARN git credential helper gh is missing or not executable: %s\n", realGH)
+				doctorPrintf("WARN git credential helper gh is missing or not executable: %s\n", realGH)
 				fmt.Println("     repair with: gh autoaccount setup --migrate")
 				issues++
 			} else {
-				fmt.Printf("OK   git credential helper gh: %s\n", realGH)
+				doctorPrintf("OK   git credential helper gh: %s\n", realGH)
 			}
 		}
 	} else {
@@ -172,7 +182,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	users, err := ghauth.ListUsers()
 	if err != nil {
-		fmt.Printf("WARN cannot inspect gh accounts: %v\n", err)
+		doctorPrintf("WARN cannot inspect gh accounts: %v\n", err)
 		issues++
 	} else {
 		invalidCount := 0
@@ -184,7 +194,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		if invalidCount == 0 {
 			fmt.Println("OK   gh account entries are valid")
 		} else {
-			fmt.Printf("WARN %d gh account entrie(s) are invalid\n", invalidCount)
+			doctorPrintf("WARN %d gh account entrie(s) are invalid\n", invalidCount)
 			fmt.Println("     log in again with: gh auth login")
 			issues++
 			manualIssues++
@@ -198,7 +208,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	if settings.GitIdentity {
 		if err := gitidentity.CheckOwnerIdentitySupport(registry); err != nil {
-			fmt.Printf("WARN %v\n", err)
+			doctorPrintf("WARN %v\n", err)
 			issues++
 		}
 	}
@@ -219,11 +229,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		for _, host := range hosts {
 			if !gitcred.CheckConfiguredHost(host) {
 				configured = false
-				fmt.Printf("WARN git credential helper not configured for %s\n", host)
+				doctorPrintf("WARN git credential helper not configured for %s\n", host)
 				issues++
 			} else if needsPath[host] && !gitcred.CheckUseHTTPPathHost(host) {
 				configured = false
-				fmt.Printf("WARN git credential.https://%s.useHttpPath is not true (owner pins need request paths)\n", host)
+				doctorPrintf("WARN git credential.https://%s.useHttpPath is not true (owner pins need request paths)\n", host)
 				issues++
 			}
 		}
@@ -245,16 +255,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			state, err := gitcred.ManagedHelper(cwd, host)
 			switch {
 			case err != nil:
-				fmt.Printf("WARN cannot read the Git credential helper list for %s in %s: %v\n", host, cwd, err)
+				doctorPrintf("WARN cannot read the Git credential helper list for %s in %s: %v\n", host, cwd, err)
 				issues++
 				manualIssues++
 			case !state.Active && state.ResetBy != "":
-				fmt.Printf("WARN in %s, %s clears the Git credential helper list for %s, so Git HTTPS there skips gh-autoaccount\n", cwd, state.ResetBy, host)
+				doctorPrintf("WARN in %s, %s clears the Git credential helper list for %s, so Git HTTPS there skips gh-autoaccount\n", cwd, state.ResetBy, host)
 				fmt.Println("     remove that entry, or add the managed helper after it")
 				issues++
 				manualIssues++
 			case state.RunsAfter != "":
-				fmt.Printf("INFO in %s, Git asks %s for %s credentials before gh-autoaccount\n", cwd, state.RunsAfter, host)
+				doctorPrintf("INFO in %s, Git asks %s for %s credentials before gh-autoaccount\n", cwd, state.RunsAfter, host)
 			}
 		}
 	}
@@ -300,23 +310,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if len(leftovers) > 0 {
 		fmt.Println("WARN files left from the retired direnv modes:")
 		for _, item := range leftovers {
-			fmt.Printf("     %s\n", item)
+			doctorPrintf("     %s\n", item)
 		}
 		issues++
 	}
 	switch {
 	case !hookExists && len(hookRefs) > 0:
-		fmt.Printf("WARN your shell config still sources the retired hook %s, which no longer exists\n", hookPath)
+		doctorPrintf("WARN your shell config still sources the retired hook %s, which no longer exists\n", hookPath)
 		for _, rc := range hookRefs {
-			fmt.Printf("     referenced from: %s\n", rc)
+			doctorPrintf("     referenced from: %s\n", rc)
 		}
 		fmt.Println("     remove the lines that source it")
 		issues++
 		manualIssues++
 	case hookKept:
-		fmt.Printf("WARN the retired hook %s is kept because your shell config may still source it\n", hookPath)
+		doctorPrintf("WARN the retired hook %s is kept because your shell config may still source it\n", hookPath)
 		for _, rc := range hookRefs {
-			fmt.Printf("     referenced from: %s\n", rc)
+			doctorPrintf("     referenced from: %s\n", rc)
 		}
 		if !scanComplete {
 			fmt.Println("     some shell config files could not be fully checked")
@@ -334,7 +344,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("OK   config directory and pins file permissions are hardened")
 	} else {
 		for _, msg := range permIssues {
-			fmt.Printf("WARN %s\n", msg)
+			doctorPrintf("WARN %s\n", msg)
 			issues++
 		}
 		fmt.Println("     repair with: gh autoaccount setup --migrate")

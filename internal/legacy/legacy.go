@@ -30,13 +30,9 @@ func ShellLibPath() (string, error) {
 	if root := os.Getenv("DIRENV_CONFIG"); root != "" {
 		return filepath.Join(root, "lib", "gh-autoprofile.sh"), nil
 	}
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		configHome = filepath.Join(home, ".config")
+	configHome, err := config.ConfigHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(configHome, "direnv", "lib", "gh-autoprofile.sh"), nil
 }
@@ -53,7 +49,7 @@ func ShellHookPath() (string, error) {
 // RCFiles are the home startup files setup could write the hook source block
 // into, and where users were told to add the line by hand when it could not.
 func RCFiles() ([]string, error) {
-	home, err := os.UserHomeDir()
+	home, err := config.HomeDir()
 	if err != nil {
 		return nil, err
 	}
@@ -80,11 +76,13 @@ const (
 // treat the hook as possibly still sourced.
 func HookReferences() (refs []string, complete bool) {
 	s := &hookScan{complete: true, visited: map[string]bool{}}
-	home, err := os.UserHomeDir()
+	if _, err := config.HomeDir(); err != nil {
+		return nil, false
+	}
+	files, err := RCFiles()
 	if err != nil {
 		return nil, false
 	}
-	files, _ := RCFiles()
 	if zdot := os.Getenv("ZDOTDIR"); zdot != "" {
 		for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".zlogin"} {
 			files = append(files, filepath.Join(zdot, name))
@@ -93,9 +91,9 @@ func HookReferences() (refs []string, complete bool) {
 	for _, path := range files {
 		s.file(path)
 	}
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		configHome = filepath.Join(home, ".config")
+	configHome, err := config.ConfigHome()
+	if err != nil {
+		return nil, false
 	}
 	for _, name := range []string{"shell", "zsh", "bash"} {
 		s.dir(filepath.Join(configHome, name), 0)

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ case "$1 $2 $3 $4" in
 "config get -g env._.path")
   if [ -n "$MISE_FAKE_GET_RAW" ]; then printf '%s\n' "$MISE_FAKE_GET_RAW"; exit 0; fi
   if [ -s "$MISE_FAKE_TOML" ]; then
-    printf '['; sed 's/.*/"&"/' "$MISE_FAKE_TOML" | paste -sd, | tr -d '\n'; printf ']\n'
+    printf '['; sed 's/.*/"&"/' "$MISE_FAKE_TOML" | paste -sd, | sed 's/","/", "/g' | tr -d '\n'; printf ']\n'
     exit 0
   fi
   echo "mise ERROR Key not found: env._.path" >&2; exit 1 ;;
@@ -156,6 +157,206 @@ func requireNative(t *testing.T) {
 	}
 }
 
+func TestSetupMiseMigratesLegacyRelativeRegistration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	dir := miseDir(t)
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("mise directory is not absolute: %q", dir)
+	}
+	if err := os.WriteFile(fm.toml, []byte("gh-autoaccount/bin\ndata/gh-autoaccount/bin\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
+	if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) {
+		t.Errorf("mise config after migration: %q", got)
+	}
+	want := []string{
+		"config set -g --remove env._.path gh-autoaccount/bin",
+		"config set -g --remove env._.path data/gh-autoaccount/bin",
+		"config set -g --append env._.path " + dir,
+	}
+	if got := fm.calls(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("migration argv: got %q, want %q", got, want)
+	}
+	want = []string{
+		"config get -g env._.path",
+		"config get -g env._.path",
+		"config set -g --remove env._.path gh-autoaccount/bin",
+		"config get -g env._.path",
+		"config get -g env._.path",
+		"config set -g --remove env._.path data/gh-autoaccount/bin",
+		"config get -g env._.path",
+		"config set -g --append env._.path " + dir,
+	}
+	if got := fileLines(t, fm.log); !reflect.DeepEqual(got, want) {
+		t.Errorf("all migration argv: got %q, want %q", got, want)
+	}
+}
+
+func TestSetupMiseDisableRemovesLegacyRelativeRegistration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	dir := miseDir(t)
+	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
+	if err := os.WriteFile(fm.toml, []byte(dir+"\ngh-autoaccount/bin\ndata/gh-autoaccount/bin\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	runSetupArgs(t, "--mise=false")
+	if got := fileLines(t, fm.toml); len(got) != 0 {
+		t.Errorf("mise config after disable: %q", got)
+	}
+	want := []string{
+		"config set -g --append env._.path " + dir,
+		"config set -g --remove env._.path gh-autoaccount/bin",
+		"config set -g --remove env._.path data/gh-autoaccount/bin",
+		"config set -g --remove env._.path " + dir,
+	}
+	if got := fm.calls(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("disable argv: got %q, want %q", got, want)
+	}
+}
+
+func TestSetupMiseLegacyPathSelection(t *testing.T) {
+	absolute := filepath.Join(t.TempDir(), "gh-autoaccount", "bin")
+	entries := []string{
+		"gh-autoaccount/bin",
+		"data/gh-autoaccount/bin",
+		"./gh-autoaccount/./bin/",
+		"data/sub/../../gh-autoaccount/bin",
+		"../gh-autoaccount/bin",
+		"~/tools/gh-autoaccount/bin",
+		"$HOME/tools/gh-autoaccount/bin",
+		"%USERPROFILE%/tools/gh-autoaccount/bin",
+		absolute,
+		"data/gh-autoaccount/bin/extra",
+		"data/gh-autoaccount/bin/..",
+		"data/another/bin",
+		"gh-autoaccount/binaries",
+		"",
+	}
+	if got, want := legacyMiseGHDirs(entries), entries[:5]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy entries: got %q, want %q", got, want)
+	}
+}
+
+func TestSetupMiseLegacyRemovalRollback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
+	requireNative(t)
+	for _, tc := range []struct {
+		name       string
+		wasEnabled bool
+		args       []string
+	}{
+		{"enable", false, []string{"--native", "--no-shell-rc", "--mise"}},
+		{"disable", true, []string{"--mise=false"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := onboardingHome(t)
+			fm := installFakeMise(t, home)
+			dir := miseDir(t)
+			const legacy = "gh-autoaccount/bin"
+			entries := []string{legacy}
+			wantCalls := []string{
+				"config set -g --remove env._.path " + legacy,
+				"config set -g --append env._.path " + legacy,
+			}
+			if tc.wasEnabled {
+				runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
+				entries = []string{dir, legacy}
+				wantCalls = append([]string{"config set -g --append env._.path " + dir}, wantCalls...)
+			}
+			if err := os.WriteFile(fm.toml, []byte(strings.Join(entries, "\n")+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			touch(t, fm.failAfter)
+
+			err := runSetupArgsErr(tc.args...)
+			if err == nil || !strings.Contains(err.Error(), "cannot unregister legacy gh-only shim directory from mise") {
+				t.Fatalf("expected legacy unregister failure: %v", err)
+			}
+			if got := fm.calls(t); !reflect.DeepEqual(got, wantCalls) {
+				t.Errorf("rollback argv: got %q, want %q", got, wantCalls)
+			}
+			if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, entries) {
+				t.Errorf("rollback config: got %q, want %q", got, entries)
+			}
+			if settings := loadSettings(t); settings.Mise != tc.wasEnabled || shims.IsMiseGHInstalled() != tc.wasEnabled {
+				t.Errorf("rollback did not restore enabled state: %+v", settings)
+			}
+		})
+	}
+}
+
+func TestSetupMiseLegacyRollbackAfterLaterFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	const first = "gh-autoaccount/bin"
+	const second = "data/gh-autoaccount/bin"
+	if err := os.WriteFile(fm.toml, []byte(first+"\n"+second+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	breakMigration(t)
+	if err := runSetupArgsErr("--no-shell-rc", "--mise", "--git-identity"); err == nil {
+		t.Fatal("expected migration failure")
+	}
+	dir := miseDir(t)
+	want := []string{
+		"config set -g --remove env._.path " + first,
+		"config set -g --remove env._.path " + second,
+		"config set -g --append env._.path " + dir,
+		"config set -g --remove env._.path " + dir,
+		"config set -g --append env._.path " + first,
+		"config set -g --append env._.path " + second,
+	}
+	if got := fm.calls(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("rollback argv: got %q, want %q", got, want)
+	}
+	if got, want := fileLines(t, fm.toml), []string{first, second}; !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy entries not restored in original order: got %q, want %q", got, want)
+	}
+}
+
+func TestSetupMiseLegacyRemovalNoOpFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
+	requireNative(t)
+	home := onboardingHome(t)
+	fm := installFakeMise(t, home)
+	if err := os.WriteFile(fm.toml, []byte("gh-autoaccount/bin\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The fake reports the same parsed entries before and after, as mise can
+	// when an entry contains its unescaped array separator.
+	t.Setenv("MISE_FAKE_GET_RAW", `["safe", "gh-autoaccount/bin"]`)
+	err := runSetupArgsErr("--no-shell-rc", "--mise")
+	if err == nil || !strings.Contains(err.Error(), "did not remove") {
+		t.Fatalf("expected an actionable no-op removal failure: %v", err)
+	}
+	for _, call := range fm.calls(t) {
+		if strings.HasPrefix(call, "config set -g --append") {
+			t.Fatalf("setup appended a PATH entry after the failed removal: %q", fm.calls(t))
+		}
+	}
+}
+
 func TestSetupMiseLifecycle(t *testing.T) {
 	requireNative(t)
 	home := onboardingHome(t)
@@ -174,6 +375,9 @@ func TestSetupMiseLifecycle(t *testing.T) {
 	}
 	if got := fm.calls(t); !reflect.DeepEqual(got, []string{register}) {
 		t.Fatalf("enable argv: %q", got)
+	}
+	if got := fileLines(t, fm.log); !reflect.DeepEqual(got, []string{"config get -g env._.path", register}) {
+		t.Fatalf("all enable argv: %q", got)
 	}
 	if got := fileLines(t, fm.toml); !reflect.DeepEqual(got, []string{dir}) {
 		t.Fatalf("mise config: %q", got)
@@ -466,6 +670,90 @@ func TestDoctorFlagsShadowedShim(t *testing.T) {
 	}
 }
 
+func TestCheckGHOnPathSanitizesTerminalControls(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain terminal controls")
+	}
+	requireNative(t)
+	root := onboardingHome(t)
+	const dirty = "path\x1b]52;c;SGFjaw==\x07middle\x7fend"
+	const visible = "path]52;c;SGFjaw==middleend"
+	home := filepath.Join(root, dirty)
+	dir := filepath.Join(home, dirty)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("MISE_DATA_DIR", "")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, err := shims.InstallNativeGH(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := filepath.Dir(shim)
+	visibleShimDir := filepath.Join(root, visible, ".local", "bin")
+	visibleDir := filepath.Join(root, visible, visible)
+	check := func(t *testing.T, wantIssues int, want ...string) {
+		t.Helper()
+		var verified bool
+		var issues int
+		out := captureOnboarding(t, func() error {
+			verified, issues = checkGHOnPath(config.Settings{Native: true})
+			return nil
+		})
+		if !verified || issues != wantIssues {
+			t.Errorf("verified = %t, issues = %d, want true, %d", verified, issues, wantIssues)
+		}
+		if strings.ContainsAny(out, "\x1b\x07\x7f") {
+			t.Errorf("output contains terminal controls: %q", out)
+		}
+		for _, line := range want {
+			if !strings.Contains(out, line) {
+				t.Errorf("missing %q in %q", line, out)
+			}
+		}
+	}
+
+	t.Run("managed path", func(t *testing.T) {
+		pathWith(t, shimDir)
+		check(t, 0, "     path: "+filepath.Join(visibleShimDir, "gh")+"\n")
+	})
+	t.Run("shadowed path and hint", func(t *testing.T) {
+		pathWith(t, dir, shimDir)
+		check(t, 1,
+			"WARN plain gh resolves to "+filepath.Join(visibleDir, "gh")+", not the managed shim\n",
+			"     put "+visibleShimDir+" before "+visibleDir+" on PATH\n")
+	})
+	t.Run("mise path and hint", func(t *testing.T) {
+		previousMise := miseExecutable
+		t.Cleanup(func() { miseExecutable = previousMise })
+		installFakeMise(t, root)
+		t.Setenv("MISE_FAKE_EXEC_GH", gh)
+		pathWith(t, shimDir)
+		check(t, 1,
+			"WARN gh inside mise exec resolves to "+filepath.Join(visibleDir, "gh")+", not the managed shim\n",
+			"     put "+visibleShimDir+" before "+visibleDir+" on PATH\n")
+	})
+	t.Run("mise error", func(t *testing.T) {
+		previousMise := miseExecutable
+		t.Cleanup(func() { miseExecutable = previousMise })
+		fm := installFakeMise(t, root)
+		script := "#!/bin/sh\nprintf 'bad\\033]52;c;SGFjaw==\\007middle\\177end' >&2\nexit 1\n"
+		if err := os.WriteFile(fm.path, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		pathWith(t, shimDir)
+		check(t, 0, "INFO cannot check gh inside mise exec: mise exec failed: exit status 1: bad]52;c;SGFjaw==middleend\n")
+	})
+}
+
 func TestCheckGHOnPathCountsIssues(t *testing.T) {
 	home, shimDir := nativeShimHome(t)
 	fm := installFakeMise(t, home)
@@ -576,6 +864,9 @@ func TestStatusReportsShadowedShim(t *testing.T) {
 // throwaway global config. Its only tool is a locally linked gh, standing in for
 // mise's own gh, and mise runs offline, so nothing is installed or fetched.
 func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mise integration is not supported on Windows")
+	}
 	requireNative(t)
 	realMise, err := exec.LookPath("mise")
 	if err != nil {
@@ -588,7 +879,8 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configFile), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configFile, []byte("[tools]\ngh = \"9.9.9\"\n"), 0600); err != nil {
+	config := "[tools]\ngh = \"9.9.9\"\n\n[env._]\npath = [\"gh-autoaccount/bin\", \"data/gh-autoaccount/bin\", \"elsewhere/bin\"]\n"
+	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for key, value := range map[string]string{
@@ -622,6 +914,13 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolGH := filepath.Join(sandbox, "data", "installs", "gh", "9.9.9", "bin", "gh")
+	legacyGH := filepath.Join(home, "gh-autoaccount", "bin", "gh")
+	if err := os.MkdirAll(filepath.Dir(legacyGH), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyGH, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	resolve := func() string {
 		out, err := runMise("exec", "--", "sh", "-c", "command -v gh")
 		if err != nil {
@@ -629,12 +928,18 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 		}
 		return out
 	}
-	if got := resolve(); got != toolGH {
-		t.Fatalf("baseline gh should be mise's tool %s, got %s", toolGH, got)
+	if got, err := filepath.Abs(resolve()); err != nil || got != legacyGH {
+		t.Fatalf("legacy relative path should resolve to %s, got %s: %v", legacyGH, got, err)
+	}
+	if got, err := miseEntries(); err != nil || !reflect.DeepEqual(got, []string{"gh-autoaccount/bin", "data/gh-autoaccount/bin", "elsewhere/bin"}) {
+		t.Fatalf("legacy registrations not read: %q, %v", got, err)
 	}
 
 	runSetupArgs(t, "--native", "--no-shell-rc", "--mise")
 	runSetupArgs(t, "--migrate")
+	if got, err := miseEntries(); err != nil || !reflect.DeepEqual(got, []string{"elsewhere/bin", dir}) {
+		t.Fatalf("legacy registrations not migrated: %q, %v", got, err)
+	}
 	data, err := os.ReadFile(configFile)
 	if err != nil || strings.Count(string(data), dir) != 1 {
 		t.Fatalf("registration missing or duplicated in %s: %v\n%s", configFile, err, data)
@@ -643,7 +948,15 @@ func TestRealMiseRegistersGHOnlyDirFirst(t *testing.T) {
 		t.Fatalf("gh-only dir is not first inside mise: %s", got)
 	}
 
+	for _, legacy := range []string{"gh-autoaccount/bin", "data/gh-autoaccount/bin"} {
+		if err := miseRegister(legacy); err != nil {
+			t.Fatal(err)
+		}
+	}
 	runSetupArgs(t, "--mise=false")
+	if got, err := miseEntries(); err != nil || !reflect.DeepEqual(got, []string{"elsewhere/bin"}) {
+		t.Fatalf("legacy registrations not removed on disable: %q, %v", got, err)
+	}
 	if data, err := os.ReadFile(configFile); err != nil || strings.Contains(string(data), dir) {
 		t.Fatalf("registration not removed: %v\n%s", err, data)
 	}

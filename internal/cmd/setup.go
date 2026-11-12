@@ -21,6 +21,19 @@ import (
 // legacyRemoved names the replacement for the retired direnv modes.
 const legacyRemoved = "legacy wrapper and export routing were removed; native routing covers every shell, and `gh autoaccount exec -- <command>` gives a tool a command-scoped token"
 
+// setupPrintf prints sanitized dynamic output, preserving the format's leading
+// and trailing newlines.
+func setupPrintf(format string, args ...any) {
+	prefix, suffix := "", ""
+	if strings.HasPrefix(format, "\n") {
+		prefix = "\n"
+	}
+	if strings.HasSuffix(format, "\n") {
+		suffix = "\n"
+	}
+	fmt.Print(prefix + sanitizeStatusValue(fmt.Sprintf(format, args...)) + suffix)
+}
+
 // NewSetupCmd creates the `setup` subcommand.
 func NewSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -131,26 +144,26 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("gh CLI not found")
 	}
 	if !isVersionAtLeast(ghVersion, "2.40.0") {
-		fmt.Printf("v%s (TOO OLD)\n", ghVersion)
+		setupPrintf("v%s (TOO OLD)\n", ghVersion)
 		return fmt.Errorf("gh CLI v2.40.0+ required for multi-account support (found v%s)", ghVersion)
 	}
-	fmt.Printf("v%s\n", ghVersion)
+	setupPrintf("v%s\n", ghVersion)
 
 	// 2. Check logged-in accounts
 	fmt.Print("  Checking gh accounts........ ")
 	users, err := ghauth.ListUsers()
 	if err != nil {
 		fmt.Println("ERROR")
-		fmt.Printf("    %v\n", err)
+		setupPrintf("    %v\n", err)
 		allGood = false
 	} else {
-		fmt.Printf("%d account(s)\n", len(users))
+		setupPrintf("%d account(s)\n", len(users))
 		for _, u := range users {
 			marker := "  "
 			if u.Active {
 				marker = "* "
 			}
-			fmt.Printf("    %s%s (%s)\n", marker, u.User, u.Host)
+			setupPrintf("    %s%s (%s)\n", marker, u.User, u.Host)
 		}
 		if len(users) < 2 {
 			fmt.Println("    Tip: Log in to more accounts with: gh auth login")
@@ -228,7 +241,7 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		fmt.Println("OK")
 		if warning != "" {
-			fmt.Println("    " + warning)
+			setupPrintf("    %s\n", warning)
 			allGood = false
 		}
 		return nil
@@ -276,15 +289,15 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	if settings.ExternalShell {
 		fmt.Println("EXTERNAL (RC and PATH unchanged; integration not verified)")
-		fmt.Printf("    Ensure your externally managed PATH puts %s before any other gh.\n", shimDir)
+		setupPrintf("    Ensure your externally managed PATH puts %s before any other gh.\n", shimDir)
 	} else if runtime.GOOS == "windows" {
 		if !configureWindowsPath(shimDir, &rollback) {
 			allGood = false
 		}
 	} else if rcPath, err = detectShellRC(); err != nil {
 		fmt.Println("SKIPPED")
-		fmt.Printf("    %v\n", err)
-		fmt.Printf("    Put %s before any other gh on PATH in your shell startup files.\n", shimDir)
+		setupPrintf("    %v\n", err)
+		setupPrintf("    Put %s before any other gh on PATH in your shell startup files.\n", shimDir)
 		allGood = false
 	} else if !shims.CheckPathBlockInstalled() && shimDirWinsForGH() {
 		// A user who already puts the shim first without our block manages PATH.
@@ -297,13 +310,13 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			snapshot, snapErr := snapshotSetupRC(target)
 			if snapErr != nil {
-				fmt.Printf("\n    Cannot snapshot %s: %v", target, snapErr)
+				setupPrintf("\n    Cannot snapshot %s: %v", target, snapErr)
 				configured = false
 				continue
 			}
 			rollback = append(rollback, snapshot.restore)
 			if err := shims.InjectPath(target, shimDir); err != nil {
-				fmt.Printf("\n    Cannot configure shim PATH in %s: %v", target, err)
+				setupPrintf("\n    Cannot configure shim PATH in %s: %v", target, err)
 				configured = false
 			}
 		}
@@ -330,9 +343,9 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 		fmt.Println("OK")
-		fmt.Printf("    Pins updated: %d\n", report.PinsUpdated)
+		setupPrintf("    Pins updated: %d\n", report.PinsUpdated)
 		for _, msg := range report.PermRepairsFailed {
-			fmt.Printf("    Warning: could not repair permissions on %s\n", msg)
+			setupPrintf("    Warning: could not repair permissions on %s\n", msg)
 		}
 		if len(report.PermRepairsFailed) > 0 {
 			allGood = false
@@ -362,14 +375,14 @@ func runSetup(cmd *cobra.Command, args []string) (retErr error) {
 	if settings.ExternalShell {
 		fmt.Println("  External shell integration is not verified; reload it through your shell manager.")
 	} else if rcPath != "" {
-		fmt.Println("  Restart your shell or run: source " + rcPath)
+		setupPrintf("  Restart your shell or run: source %s\n", rcPath)
 	} else if runtime.GOOS == "windows" {
 		fmt.Println("  Open a new terminal to pick up the PATH change.")
 	}
 
 	if alias, _ := cmd.Flags().GetBool("alias"); alias {
 		if created, err := configureShortAlias(cmd.Context(), helperRealGH); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not configure gh aa (%v); use gh autoaccount directly.\n", err)
+			fmt.Fprintln(cmd.ErrOrStderr(), sanitizeStatusValue(fmt.Sprintf("Warning: could not configure gh aa (%v); use gh autoaccount directly.", err)))
 		} else if created {
 			fmt.Fprintln(cmd.OutOrStdout(), "Configured gh aa alias.")
 		} else {
@@ -386,7 +399,7 @@ func configureWindowsPath(shimDir string, rollback *[]func() error) bool {
 	restore, changed, err := shims.PrependUserPath(shimDir)
 	if err != nil {
 		fmt.Println("FAILED")
-		fmt.Printf("    Cannot update the user PATH: %v\n", err)
+		setupPrintf("    Cannot update the user PATH: %v\n", err)
 		return false
 	}
 	if changed {
@@ -397,9 +410,9 @@ func configureWindowsPath(shimDir string, rollback *[]func() error) bool {
 	if err != nil || config.SamePath(filepath.Clean(filepath.Dir(gh)), filepath.Clean(shimDir)) {
 		return true
 	}
-	fmt.Printf("    WARN: new shells find %s first, because Windows searches the machine PATH before the user PATH.\n", gh)
+	setupPrintf("    WARN: new shells find %s first, because Windows searches the machine PATH before the user PATH.\n", gh)
 	fmt.Println("    Plain gh is not routed until an administrator puts the shim directory first on the machine PATH:")
-	fmt.Printf("      %s\n", machinePathCommand(shimDir))
+	setupPrintf("      %s\n", machinePathCommand(shimDir))
 	fmt.Println("    Git HTTPS routing works either way.")
 	return false
 }
@@ -609,15 +622,15 @@ func cleanupLegacy(registry *config.PinRegistry, externalShell bool) bool {
 		fmt.Println("REVIEW")
 	}
 	if cleaned > 0 {
-		fmt.Printf("    Removed %d legacy item(s); restart open shells to drop old wrappers and exports.\n", cleaned)
+		setupPrintf("    Removed %d legacy item(s); restart open shells to drop old wrappers and exports.\n", cleaned)
 	}
 	for _, item := range review {
-		fmt.Printf("    Review required: %s\n", item)
+		setupPrintf("    Review required: %s\n", item)
 	}
 	if keptHook != "" {
-		fmt.Printf("    Remove the line that sources %s from your shell config, then delete that file.\n", keptHook)
+		setupPrintf("    Remove the line that sources %s from your shell config, then delete that file.\n", keptHook)
 		if len(sourcedBy) > 0 {
-			fmt.Printf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
+			setupPrintf("    It is referenced from: %s\n", strings.Join(sourcedBy, ", "))
 		}
 		if !scanComplete {
 			fmt.Println("    Some shell config files could not be fully checked, so it is kept to be safe.")
