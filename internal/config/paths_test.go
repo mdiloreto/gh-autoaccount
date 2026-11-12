@@ -34,6 +34,7 @@ func TestNormalizeEnvRelativeRoots(t *testing.T) {
 		"XDG_CACHE_HOME":    "relative-cache",
 		"GH_CONFIG_DIR":     "relative-gh",
 		"GIT_CONFIG_GLOBAL": "relative-gitconfig",
+		"GIT_CONFIG_SYSTEM": "relative-system-gitconfig",
 		"DIRENV_CONFIG":     "relative-direnv",
 		"ZDOTDIR":           "relative-zdotdir",
 	} {
@@ -42,7 +43,7 @@ func TestNormalizeEnvRelativeRoots(t *testing.T) {
 	if err := NormalizeEnv(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR"} {
+	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
 		if value, set := os.LookupEnv(name); set {
 			t.Errorf("%s = %q; want unset", name, value)
 		}
@@ -50,7 +51,6 @@ func TestNormalizeEnvRelativeRoots(t *testing.T) {
 	for name, want := range map[string]string{
 		"HOME":              home,
 		"USERPROFILE":       home,
-		"GIT_CONFIG_GLOBAL": "relative-gitconfig",
 		"DIRENV_CONFIG":     "relative-direnv",
 		"ZDOTDIR":           "relative-zdotdir",
 	} {
@@ -167,7 +167,7 @@ func TestNormalizeEnvWindowsRelativeAppData(t *testing.T) {
 func TestNormalizeEnvPreservesAbsoluteRoots(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
-	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR"} {
+	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
 		t.Setenv(name, home)
 	}
 	for i := 0; i < 2; i++ {
@@ -175,7 +175,7 @@ func TestNormalizeEnvPreservesAbsoluteRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR"} {
+	for _, name := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
 		if value, set := os.LookupEnv(name); !set || value != home {
 			t.Errorf("%s = %q, set=%t; want %q", name, value, set, home)
 		}

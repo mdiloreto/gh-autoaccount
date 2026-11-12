@@ -17,6 +17,7 @@ func NormalizeEnv() error {
 	names := []string{
 		"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
 		"GH_CONFIG_DIR",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
 	}
 	if runtime.GOOS == "windows" {
 		names = append(names, "AppData", "LocalAppData")

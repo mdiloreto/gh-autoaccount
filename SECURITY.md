@@ -32,8 +32,9 @@ In scope — a fix is expected if broken:
   selected host's remote principal when requested; `--expect-user` alone checks
   only the selected profile
 - parsed third-party output (e.g. `gh auth status`) is sanitized before display
-- relative `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `GH_CONFIG_DIR` values
-  are rejected or removed at startup, before any child `gh` or `git` runs, so a
+- relative `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `GH_CONFIG_DIR`,
+  `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_SYSTEM` values are rejected or removed at
+  startup, before any child `gh` or `git` runs, so a
   checkout cannot become the config or extension root through the working directory
 - a fatal setup failure after an RC edit restores the actual RC target and the
   previous managed assets, settings, and helper chain; an RC symlink is not
