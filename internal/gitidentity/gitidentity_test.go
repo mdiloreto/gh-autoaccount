@@ -221,6 +221,12 @@ func TestPrepareGlobalWindowsUsesHome(t *testing.T) {
 		if err := os.Remove(lock); err != nil {
 			t.Fatal(err)
 		}
+		// prepareGlobal resolves an existing config through any symlinks; the
+		// Windows runner's temp path uses an 8.3 short name, so resolve the
+		// expectation the same way before comparing.
+		if resolved, err := filepath.EvalSymlinks(want); err == nil {
+			want = resolved
+		}
 		if !strings.EqualFold(global, want) {
 			t.Fatalf("global = %q, want %q", global, want)
 		}
