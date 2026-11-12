@@ -138,12 +138,20 @@ func writeExtension(t *testing.T, path string) {
 
 func TestMiseGHDirFollowsXDGDataHome(t *testing.T) {
 	home := miseShimHome(t)
+	t.Setenv("USERPROFILE", home)
 	if dir, err := MiseGHDir(); err != nil || dir != filepath.Join(home, "data", "gh-autoaccount", "bin") {
 		t.Fatalf("XDG data dir: %q, %v", dir, err)
 	}
-	t.Setenv("XDG_DATA_HOME", "")
-	if dir, err := MiseGHDir(); err != nil || dir != filepath.Join(home, ".local", "share", "gh-autoaccount", "bin") {
-		t.Fatalf("default data dir: %q, %v", dir, err)
+	for _, value := range []string{"", ".", "relative"} {
+		t.Run("fallback for "+value, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", value)
+			if got, err := os.UserHomeDir(); err != nil || got != home {
+				t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+			}
+			if dir, err := MiseGHDir(); err != nil || dir != filepath.Join(home, ".local", "share", "gh-autoaccount", "bin") {
+				t.Fatalf("default data dir: %q, %v", dir, err)
+			}
+		})
 	}
 }
 

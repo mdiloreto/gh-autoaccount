@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -65,6 +67,261 @@ printf '%s|%s|%s|%s\n' "$GH_AUTOPROFILE_USER" "$GH_AUTOPROFILE_MODE" "$GH_TOKEN"
 	if err := config.SavePins(registry); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("relative roots are not forwarded to gh", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("probe fixture requires a POSIX shell")
+		}
+		probe := filepath.Join(t.TempDir(), "probe-gh")
+		script := `#!/bin/sh
+if [ "$1 $2" = 'auth token' ]; then
+  printf 'probe-token\n'
+  exit 0
+fi
+test "$1 $2" = 'auth status' && test "$GH_TOKEN" = 'probe-token' || exit 1
+printf 'config=%s\ndata=%s\nghconfig=%s\n' "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$GH_CONFIG_DIR"
+`
+		if err := os.WriteFile(probe, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+		if err := config.SavePins(registry); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GH_PATH", "")
+		t.Setenv("GH_AUTOPROFILE_REAL_GH", probe)
+		t.Setenv("GH_AUTOACCOUNT_USER", "")
+		configHome := filepath.Join(dir, "config space's")
+		dataHome := filepath.Join(dir, "data")
+		ghConfig := filepath.Join(dir, "gh-config")
+		for _, tc := range []struct {
+			name, configHome, dataHome, ghConfig, want string
+		}{
+			{name: "relative", configHome: ".", dataHome: ".", ghConfig: "relative-gh", want: "config=\ndata=\nghconfig=\n"},
+			{name: "absolute", configHome: configHome, dataHome: dataHome, ghConfig: ghConfig, want: fmt.Sprintf("config=%s\ndata=%s\nghconfig=%s\n", configHome, dataHome, ghConfig)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("XDG_CONFIG_HOME", tc.configHome)
+				t.Setenv("XDG_DATA_HOME", tc.dataHome)
+				t.Setenv("GH_CONFIG_DIR", tc.ghConfig)
+				command := exec.Command(binary, "__shim-gh", "auth", "status")
+				command.Dir = personal
+				out, err := command.CombinedOutput()
+				if err != nil || string(out) != tc.want {
+					t.Fatalf("gh child = %q, %v; want %q", out, err, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("relative XDG cannot redirect child Git global config", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("credential fixture requires a POSIX shell")
+		}
+		if _, err := exec.LookPath("git"); err != nil {
+			t.Skip("git unavailable")
+		}
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+		if err := config.SavePins(registry); err != nil {
+			t.Fatal(err)
+		}
+		for path, name := range map[string]string{
+			filepath.Join(dir, ".config", "git", "config"): "trusted",
+			filepath.Join(personal, "git", "config"):       "repository",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("[user]\n\tname = "+name+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("XDG_CONFIG_HOME", ".")
+		t.Setenv("GH_PATH", "")
+		t.Setenv("GH_AUTOACCOUNT_USER", "")
+		command := exec.Command(binary, "exec", "--", "git", "config", "--global", "user.name")
+		command.Dir = personal
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=") {
+				command.Env = append(command.Env, entry)
+			}
+		}
+		out, err := command.CombinedOutput()
+		if err != nil || string(out) != "trusted\n" {
+			t.Fatalf("child Git global name = %q, %v; want trusted", out, err)
+		}
+	})
+	t.Run("real gh ignores relative config and data roots", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("real gh fixture requires Linux")
+		}
+		const realGH = "/usr/bin/gh"
+		if _, err := os.Stat(realGH); err != nil {
+			t.Skipf("real gh unavailable: %v", err)
+		}
+		root := t.TempDir()
+		home, repo := filepath.Join(root, "home"), filepath.Join(root, "repo")
+		for path, token := range map[string]string{
+			filepath.Join(home, ".config", "gh", "hosts.yml"): "trusted-token",
+			filepath.Join(repo, "gh", "hosts.yml"):            "repository-token",
+			filepath.Join(repo, "relative-gh", "hosts.yml"):   "repository-token",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			contents := fmt.Sprintf("github.com:\n  user: fixture\n  oauth_token: %s\n  users:\n    fixture:\n      oauth_token: %s\n", token, token)
+			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for path, output := range map[string]string{
+			filepath.Join(home, ".local", "share", "gh", "extensions", "gh-evil", "gh-evil"): "trusted-extension",
+			filepath.Join(repo, "gh", "extensions", "gh-evil", "gh-evil"):                    "repository-extension",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '"+output+"\\n'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for name, value := range map[string]string{
+			"HOME":                            home,
+			"USERPROFILE":                     home,
+			"XDG_CONFIG_HOME":                 ".",
+			"XDG_DATA_HOME":                   ".",
+			"GH_PATH":                         realGH,
+			"GH_AUTOPROFILE_REAL_GH":          realGH,
+			"GH_AUTOPROFILE_DISABLE_SHIM":     "1",
+			"GH_HOST":                         "github.com",
+			"GH_REPO":                         "",
+			"GH_TOKEN":                        "",
+			"GITHUB_TOKEN":                    "",
+			"GH_PROMPT_DISABLED":              "1",
+			"GH_NO_UPDATE_NOTIFIER":           "1",
+			"GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+			"GH_TELEMETRY":                    "0",
+		} {
+			t.Setenv(name, value)
+		}
+		for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+			t.Setenv(name, "http://127.0.0.1:1")
+		}
+		t.Setenv("NO_PROXY", "")
+		for _, ghConfig := range []string{"", "relative-gh"} {
+			t.Run("token with GH_CONFIG_DIR="+ghConfig, func(t *testing.T) {
+				t.Setenv("GH_CONFIG_DIR", ghConfig)
+				command := exec.Command(binary, "__shim-gh", "auth", "token")
+				command.Dir = repo
+				out, err := command.CombinedOutput()
+				if err != nil || string(out) != "trusted-token\n" {
+					t.Fatalf("gh auth token = %q, %v; want trusted token", out, err)
+				}
+			})
+		}
+		t.Setenv("GH_CONFIG_DIR", "")
+		command := exec.Command(binary, "__shim-gh", "evil")
+		command.Dir = repo
+		out, err := command.CombinedOutput()
+		if err != nil || string(out) != "trusted-extension\n" {
+			t.Fatalf("gh extension = %q, %v; want trusted extension", out, err)
+		}
+	})
+	t.Run("doctor error strips terminal controls", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not allow control characters in paths")
+		}
+		root := filepath.Join(t.TempDir(), "config-\x1b[31m")
+		if err := os.MkdirAll(filepath.Join(root, "gh-autoprofile", "settings.yml"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("XDG_CONFIG_HOME", root)
+		out, err := exec.Command(binary, "doctor").CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "cannot load setup settings") || !strings.Contains(string(out), "config-[31m") {
+			t.Fatalf("doctor = %q, %v; want sanitized path error", out, err)
+		}
+		for _, r := range string(out) {
+			if r < 0x20 && r != '\n' || r == 0x7f || r >= 0x80 && r <= 0x9f {
+				t.Fatalf("doctor error emitted terminal control U+%04X: %q", r, out)
+			}
+		}
+	})
+	t.Run("direct proxy error strips terminal controls", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("fixture requires a symlink and control characters in paths")
+		}
+		root := t.TempDir()
+		proxy := filepath.Join(root, "gh")
+		if err := os.Symlink(binary, proxy); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GH_PATH", filepath.Join(root, "missing-\x1b[31m"))
+		command := exec.Command(proxy, "auth", "status")
+		command.Dir = personal
+		out, err := command.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "missing-[31m") {
+			t.Fatalf("proxy = %q, %v; want sanitized path error", out, err)
+		}
+		for _, r := range string(out) {
+			if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f || r >= 0x80 && r <= 0x9f {
+				t.Fatalf("proxy error emitted terminal control U+%04X: %q", r, out)
+			}
+		}
+	})
+	t.Run("relative XDG cannot execute repository token command", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("token command fixture requires a POSIX shell")
+		}
+		root := t.TempDir()
+		home, repo := filepath.Join(root, "home"), filepath.Join(root, "repo")
+		if err := os.MkdirAll(filepath.Join(repo, "gh-autoprofile"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(home, 0700); err != nil {
+			t.Fatal(err)
+		}
+		broker, marker := filepath.Join(repo, "broker"), filepath.Join(root, "executed")
+		if err := os.WriteFile(broker, []byte("#!/bin/sh\nprintf executed > \"$TEST_RELATIVE_XDG_MARKER\"\nprintf 'attacker-token\\n'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		pins := fmt.Sprintf("pins:\n  - user: attacker\n    owner: example-org\n    token_command: %q\n", broker)
+		if err := os.WriteFile(filepath.Join(repo, "gh-autoprofile", "pins.yml"), []byte(pins), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("GH_AUTOACCOUNT_USER", "")
+		t.Setenv("TEST_RELATIVE_XDG_MARKER", marker)
+		for _, tc := range []struct {
+			name, configHome, want string
+			runsBroker             bool
+		}{
+			{name: "absolute override", configHome: repo, want: "username=x-access-token\npassword=attacker-token\n\n", runsBroker: true},
+			{name: "relative override", configHome: "."},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("XDG_CONFIG_HOME", tc.configHome)
+				for _, helper := range []string{"__git-credential", "credential-helper"} {
+					cmd := exec.Command(binary, helper, "get")
+					cmd.Dir = repo
+					cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\npath=example-org/repo.git\n\n")
+					out, err := cmd.CombinedOutput()
+					if err != nil || string(out) != tc.want {
+						t.Fatalf("%s = %q, %v; want %q", helper, out, err, tc.want)
+					}
+					_, statErr := os.Stat(marker)
+					if tc.runsBroker {
+						if statErr != nil {
+							t.Fatalf("%s did not execute the explicitly configured broker: %v", helper, statErr)
+						}
+						if err := os.Remove(marker); err != nil {
+							t.Fatal(err)
+						}
+					} else if !os.IsNotExist(statErr) {
+						t.Fatalf("%s executed the repository token command: %v", helper, statErr)
+					}
+				}
+			})
+		}
+	})
 	t.Run("default and enterprise helper host isolation", func(t *testing.T) {
 		if err := config.SaveSettings(config.Settings{DefaultUser: "alice"}); err != nil {
 			t.Fatal(err)

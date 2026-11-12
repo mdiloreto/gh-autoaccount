@@ -7,8 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -226,19 +226,33 @@ func CheckOwnerIdentitySupport(registry *config.PinRegistry) error {
 	return nil
 }
 
+// gitHome returns the home Git uses for its global config. Git for Windows
+// prefers an absolute HOME over USERPROFILE.
+func gitHome() (string, error) {
+	if runtime.GOOS == "windows" {
+		if home := os.Getenv("HOME"); home != "" && filepath.IsAbs(home) {
+			return home, nil
+		}
+	}
+	return config.HomeDir()
+}
+
+func gitConfigHome(home string) string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(home, ".config")
+}
+
 func prepareGlobal(include string) (global, lock string, err error) {
 	global = os.Getenv("GIT_CONFIG_GLOBAL")
 	if global == "" {
-		home, err := os.UserHomeDir()
+		home, err := gitHome()
 		if err != nil {
 			return "", "", err
 		}
 		global = filepath.Join(home, ".gitconfig")
-		xdg := os.Getenv("XDG_CONFIG_HOME")
-		if xdg == "" {
-			xdg = filepath.Join(home, ".config")
-		}
-		xdg = filepath.Join(xdg, "git", "config")
+		xdg := filepath.Join(gitConfigHome(home), "git", "config")
 		if _, err := os.Lstat(global); os.IsNotExist(err) {
 			if _, err := os.Lstat(xdg); err == nil {
 				global = xdg

@@ -41,6 +41,75 @@ func legacyHome(t *testing.T) string {
 	return home
 }
 
+func TestShellLibPathConfigRoots(t *testing.T) {
+	home, absolute := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got, err := os.UserHomeDir(); err != nil || got != home {
+		t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name, xdg, direnv, want string
+	}{
+		{name: "default", want: filepath.Join(home, ".config", "direnv", "lib", "gh-autoprofile.sh")},
+		{name: "relative XDG", xdg: ".", want: filepath.Join(home, ".config", "direnv", "lib", "gh-autoprofile.sh")},
+		{name: "absolute XDG", xdg: absolute, want: filepath.Join(absolute, "direnv", "lib", "gh-autoprofile.sh")},
+		{name: "relative direnv override", xdg: absolute, direnv: "direnv-override", want: filepath.Join("direnv-override", "lib", "gh-autoprofile.sh")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", tc.xdg)
+			t.Setenv("DIRENV_CONFIG", tc.direnv)
+			if got, err := ShellLibPath(); err != nil || got != tc.want {
+				t.Fatalf("ShellLibPath() = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestHookReferencesIgnoresRelativeXDGConfigHome(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got, err := os.UserHomeDir(); err != nil || got != home {
+		t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", ".")
+	t.Setenv("ZDOTDIR", "")
+	t.Chdir(cwd)
+	trusted := filepath.Join(home, ".config", "shell", "hook.zsh")
+	foreign := filepath.Join(cwd, "shell", "hook.zsh")
+	for _, path := range []string{trusted, foreign} {
+		write(t, path, "source ~/.config/gh-autoprofile/hook.sh\n", 0600)
+	}
+	refs, complete := HookReferences()
+	if !complete || len(refs) != 1 || refs[0] != trusted {
+		t.Fatalf("HookReferences() = %v, %v; want only %q", refs, complete, trusted)
+	}
+}
+
+func TestLegacyRejectsRelativeHome(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("HOME", ".")
+	t.Setenv("USERPROFILE", ".")
+	if got, err := os.UserHomeDir(); err != nil || got != "." {
+		t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", ".")
+	t.Setenv("DIRENV_CONFIG", "")
+	t.Setenv("ZDOTDIR", "")
+	t.Chdir(cwd)
+	write(t, filepath.Join(cwd, ".bashrc"), "source ~/.config/gh-autoprofile/hook.sh\n", 0600)
+	if path, err := ShellLibPath(); err == nil || path != "" {
+		t.Fatalf("ShellLibPath() = %q, %v; want a home-directory error", path, err)
+	}
+	if files, err := RCFiles(); err == nil || files != nil {
+		t.Fatalf("RCFiles() = %v, %v; want a home-directory error", files, err)
+	}
+	if refs, complete := HookReferences(); complete || refs != nil {
+		t.Fatalf("HookReferences() = %v, %v; want an incomplete scan", refs, complete)
+	}
+}
+
 // fakeDirenv puts a direnv on PATH that appends its arguments to a log, and
 // returns the log path.
 func fakeDirenv(t *testing.T, script string) string {

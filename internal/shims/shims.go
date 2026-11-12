@@ -28,7 +28,7 @@ func Dir() (string, error) {
 		}
 		return filepath.Join(local, "gh-autoaccount", "bin"), nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := config.HomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -171,7 +171,7 @@ func CheckPathConfigured() bool {
 // Unlike CheckPathConfigured it ignores the process PATH, which may contain the
 // shim directory without any gh-autoaccount installation.
 func CheckPathBlockInstalled() bool {
-	home, err := os.UserHomeDir()
+	home, err := config.HomeDir()
 	if err != nil {
 		return false
 	}

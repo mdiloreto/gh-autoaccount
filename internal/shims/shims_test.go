@@ -3,6 +3,7 @@ package shims
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -120,5 +121,26 @@ func TestInjectPath(t *testing.T) {
 	}
 	if !strings.Contains(s, `export PATH='/tmp/gh-autoprofile-shims':"$PATH"`) {
 		t.Fatalf("shim PATH export not found: %s", s)
+	}
+}
+
+func TestShimsRejectRelativeHome(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, ".bashrc"), []byte(shimMarkerStart), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", ".")
+	t.Setenv("USERPROFILE", ".")
+	if got, err := os.UserHomeDir(); err != nil || got != "." {
+		t.Skipf("os.UserHomeDir does not use HOME or USERPROFILE: %q, %v", got, err)
+	}
+	t.Chdir(cwd)
+	if runtime.GOOS != "windows" {
+		if dir, err := Dir(); err == nil || dir != "" {
+			t.Fatalf("Dir() = %q, %v; want a home-directory error", dir, err)
+		}
+	}
+	if CheckPathBlockInstalled() {
+		t.Fatal("read a shim PATH block from the relative home")
 	}
 }

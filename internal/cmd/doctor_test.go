@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -10,6 +11,114 @@ import (
 	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/shims"
 )
+
+func TestDoctorPrintfSanitizesTerminalControls(t *testing.T) {
+	out := captureOnboarding(t, func() error {
+		doctorPrintf("value: %s\n", "safe\x1b]52;c;SGFjaw==\x07middle\x7fend")
+		return nil
+	})
+	if !strings.Contains(out, "safe]52;c;SGFjaw==middleend") {
+		t.Errorf("missing sanitized value: %q", out)
+	}
+	if strings.ContainsAny(out, "\x1b\x07\x7f") {
+		t.Errorf("output contains terminal controls: %q", out)
+	}
+	if out != "value: safe]52;c;SGFjaw==middleend\n" {
+		t.Errorf("unexpected formatted output: %q", out)
+	}
+	out = captureOnboarding(t, func() error {
+		doctorPrintf("%s\n", "%s")
+		return nil
+	})
+	if out != "%s\n" {
+		t.Errorf("literal format argument changed: %q", out)
+	}
+	out = captureOnboarding(t, func() error {
+		doctorPrintf("%s", "before\nafter\u009b")
+		return nil
+	})
+	if out != "beforeafter" {
+		t.Errorf("untrusted controls or unexpected line break: %q", out)
+	}
+}
+
+func TestDoctorSanitizesGHAuthStatusError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh uses a shell script")
+	}
+	home := onboardingHome(t)
+	gh := filepath.Join(home, "bin", "gh")
+	script := "#!/bin/sh\nprintf 'safe\\033]52;c;SGFjaw==\\007middle\\177end'\nexit 1\n"
+	if err := os.WriteFile(gh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_PATH", gh)
+	out := captureOnboarding(t, NewDoctorCmd().Execute)
+	if !strings.Contains(out, "WARN cannot inspect gh accounts:") {
+		t.Fatalf("missing gh auth status warning: %q", out)
+	}
+	if !strings.Contains(out, "safe]52;c;SGFjaw==middleend\n") {
+		t.Errorf("missing sanitized gh output and line break: %q", out)
+	}
+	if strings.ContainsAny(out, "\x1b\x07\x7f") {
+		t.Errorf("doctor emitted terminal controls: %q", out)
+	}
+}
+
+func TestDoctorFixSanitizesGHAuthStatusError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh uses a shell script")
+	}
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	home := onboardingHome(t)
+	gh := filepath.Join(home, "bin", "gh")
+	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'gh version 2.50.0\\n';;\n  'auth status') printf 'bad\\033]52;c;SGFjaw==\\007middle\\177end'; exit 1;;\n  *) exit 1;;\nesac\n"
+	if err := os.WriteFile(gh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_PATH", gh)
+	doctor := NewDoctorCmd()
+	doctor.SetArgs([]string{"--fix"})
+	out := captureOnboarding(t, doctor.Execute)
+	if !strings.Contains(out, "Checking gh accounts........ ERROR") {
+		t.Fatalf("missing gh auth status warning: %q", out)
+	}
+	if !strings.Contains(out, "bad]52;c;SGFjaw==middleend") {
+		t.Errorf("missing sanitized gh output: %q", out)
+	}
+	if strings.ContainsAny(out, "\x1b\x07\x7f") {
+		t.Errorf("doctor --fix emitted terminal controls: %q", out)
+	}
+}
+
+func TestDoctorFixSanitizesGHVersionOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh uses a shell script")
+	}
+	if !shims.NativeGHSupported() {
+		t.Skip("native routing unsupported")
+	}
+	home := onboardingHome(t)
+	gh := filepath.Join(home, "bin", "gh")
+	script := "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'gh version 2.50.0\\033]52;c;SGFjaw==\\007\\n';;\n  'auth status') printf 'github.com\\n  Logged in to github.com account alice (keyring)\\n';;\n  'auth token --user alice --hostname github.com') printf 'test-token\\n';;\n  *) exit 1;;\nesac\n"
+	if err := os.WriteFile(gh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_PATH", gh)
+	doctor := NewDoctorCmd()
+	doctor.SetArgs([]string{"--fix"})
+	out := captureOnboarding(t, doctor.Execute)
+	if !strings.Contains(out, "Checking gh CLI............. v2.50.0]52;c;SGFjaw==") {
+		t.Fatalf("missing sanitized gh version output: %q", out)
+	}
+	for _, r := range out {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Fatalf("doctor --fix emitted terminal control %U: %q", r, out)
+		}
+	}
+}
 
 func TestDoctorNativeRequiredIntegrations(t *testing.T) {
 	if !shims.NativeGHSupported() {

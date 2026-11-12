@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -104,6 +106,43 @@ func TestCredentialHelperOwnerPinWinsOverCwdSelection(t *testing.T) {
 	}
 	if want := "username=x-access-token\npassword=tok-bob\n\n"; out != want {
 		t.Fatalf("credential = %q, want %q", out, want)
+	}
+}
+
+func TestCredentialHelperIgnoresRelativeXDGConfigHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("token command fixture requires a POSIX shell")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "gh-autoprofile"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	broker := filepath.Join(repo, "broker")
+	marker := filepath.Join(root, "executed")
+	if err := os.WriteFile(broker, []byte("#!/bin/sh\nprintf executed > \"$TEST_RELATIVE_XDG_MARKER\"\nprintf 'attacker-token\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pins := fmt.Sprintf("pins:\n  - user: attacker\n    owner: example-org\n    token_command: %q\n", broker)
+	if err := os.WriteFile(filepath.Join(repo, "gh-autoprofile", "pins.yml"), []byte(pins), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", ".")
+	t.Setenv("GH_AUTOACCOUNT_USER", "")
+	t.Setenv("TEST_RELATIVE_XDG_MARKER", marker)
+	t.Chdir(repo)
+	out, err := runCredentialGet(t, "protocol=https\nhost=github.com\npath=example-org/repo.git\n\n")
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("repository token command executed; helper output %q, error %v, marker error %v", out, err, statErr)
+	}
+	if err != nil || out != "" {
+		t.Fatalf("helper = %q, %v; want no credential", out, err)
 	}
 }
 

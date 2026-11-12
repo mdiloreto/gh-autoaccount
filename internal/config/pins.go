@@ -176,15 +176,11 @@ type PinRegistry struct {
 }
 
 // ConfigDir returns the gh-autoprofile config directory path.
-// Respects XDG_CONFIG_HOME, defaults to ~/.config/gh-autoprofile.
+// Respects an absolute XDG_CONFIG_HOME, defaults to ~/.config/gh-autoprofile.
 func ConfigDir() (string, error) {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	configHome, err := ConfigHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(configHome, "gh-autoprofile"), nil
 }
