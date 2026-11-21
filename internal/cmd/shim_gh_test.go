@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
+	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/skills"
 )
 
@@ -528,5 +529,148 @@ func TestShimBypassPreservesArgumentsAndEnvironment(t *testing.T) {
 	}
 	if got := out.String(); got != "fake-test-token\nfixture-user\ncaller-value\naa\nstatus\n" {
 		t.Fatalf("disabled short alias output = %q", got)
+	}
+}
+
+func TestRefreshCredentialHelperPin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed helper is a POSIX shell script")
+	}
+	setup := func(t *testing.T, stale bool) (real, helper string) {
+		t.Helper()
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+		t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+		t.Setenv("GH_PATH", "")
+		t.Setenv("GH_AUTOPROFILE_REAL_GH", "")
+		real = filepath.Join(home, "real-gh")
+		if err := os.WriteFile(real, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		ext := filepath.Join(home, "data", "gh", "extensions", "gh-autoaccount", "gh-autoaccount")
+		if err := os.MkdirAll(filepath.Dir(ext), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ext, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		pinned := real
+		if stale {
+			pinned = filepath.Join(home, "pruned-gh")
+		}
+		helper, err := gitcred.Install(ext, pinned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return real, helper
+	}
+	readHelper := func(t *testing.T, path string) string {
+		t.Helper()
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+
+	t.Run("missing pin is repaired", func(t *testing.T) {
+		real, helper := setup(t, true)
+		if err := refreshCredentialHelperPin(real); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := gitcred.RealGH(); err != nil || got != real {
+			t.Fatalf("pin = %q, %v; want %q", got, err, real)
+		}
+		if target, err := gitcred.Target(); err != nil || !strings.Contains(target, "extensions/gh-autoaccount") {
+			t.Fatalf("target = %q, %v", target, err)
+		}
+		if !strings.Contains(readHelper(t, helper), real) {
+			t.Fatal("helper does not embed the refreshed gh")
+		}
+	})
+
+	t.Run("valid pin is untouched", func(t *testing.T) {
+		real, helper := setup(t, false)
+		before := readHelper(t, helper)
+		if err := refreshCredentialHelperPin(real); err != nil {
+			t.Fatal(err)
+		}
+		if after := readHelper(t, helper); after != before {
+			t.Fatalf("helper changed: %q -> %q", before, after)
+		}
+	})
+
+	for _, key := range []string{"GH_PATH", "GH_AUTOPROFILE_REAL_GH"} {
+		t.Run("explicit "+key+" is not rewritten", func(t *testing.T) {
+			real, helper := setup(t, true)
+			before := readHelper(t, helper)
+			t.Setenv(key, real)
+			if err := refreshCredentialHelperPin(real); err != nil {
+				t.Fatal(err)
+			}
+			if after := readHelper(t, helper); after != before {
+				t.Fatalf("explicit override was rewritten: %q -> %q", before, after)
+			}
+		})
+	}
+
+	t.Run("unmanaged helper is untouched", func(t *testing.T) {
+		real, helper := setup(t, true)
+		if err := os.WriteFile(helper, []byte("#!/bin/sh\necho unmanaged\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		before := readHelper(t, helper)
+		if err := refreshCredentialHelperPin(real); err != nil {
+			t.Fatal(err)
+		}
+		if after := readHelper(t, helper); after != before {
+			t.Fatalf("unmanaged helper changed: %q -> %q", before, after)
+		}
+	})
+}
+
+func TestShimRefreshesStaleCredentialHelperPin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed helper is a POSIX shell script")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("GH_PATH", "")
+	t.Setenv("GH_AUTOPROFILE_REAL_GH", "")
+	t.Setenv("GH_AUTOPROFILE_DISABLE_SHIM", "yes")
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nprintf 'dispatched:%s\\n' \"$1\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	ext := filepath.Join(home, "data", "gh", "extensions", "gh-autoaccount", "gh-autoaccount")
+	if err := os.MkdirAll(filepath.Dir(ext), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ext, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitcred.Install(ext, filepath.Join(home, "pruned-gh")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewShimGHCMD()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "dispatched:--version\n" {
+		t.Fatalf("dispatch output = %q", got)
+	}
+	if got, err := gitcred.RealGH(); err != nil || got != real {
+		t.Fatalf("pin = %q, %v; want %q", got, err, real)
 	}
 }
