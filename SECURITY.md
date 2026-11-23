@@ -45,7 +45,10 @@ Out of scope — accepted trust boundaries:
   authoritative; otherwise initial discovery uses `PATH`. Keep both trusted.
   Setup-generated helper and shim surfaces embed the resolved absolute real-`gh`
   and extension paths and override hostile inherited routing markers instead of
-  rediscovering through a project-controlled `PATH`.
+  rediscovering through a project-controlled `PATH`. When a version manager prunes
+  the pinned `gh`, the `gh` dispatcher refreshes that absolute pin from the same
+  resolution it uses to dispatch; an explicit `GH_PATH` or
+  `GH_AUTOPROFILE_REAL_GH` is never rewritten into a helper.
 - Canonical path matching is a routing rule, not a lock. It does not prevent a
   same-UID process from replacing a path or symlink between inspection and use.
 - Absolute generated routes are likewise not immutable: a same-UID process can

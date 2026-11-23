@@ -8,6 +8,7 @@ import (
 
 	"github.com/mdiloreto/gh-autoaccount/internal/config"
 	"github.com/mdiloreto/gh-autoaccount/internal/ghauth"
+	"github.com/mdiloreto/gh-autoaccount/internal/gitcred"
 	"github.com/mdiloreto/gh-autoaccount/internal/profileexec"
 	"github.com/spf13/cobra"
 )
@@ -23,6 +24,9 @@ func NewShimGHCMD() *cobra.Command {
 			realGH, err := ghauth.ResolveGHPath()
 			if err != nil {
 				return err
+			}
+			if err := refreshCredentialHelperPin(realGH); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "gh-autoaccount: cannot refresh git credential helper: %v; run: gh autoaccount setup --migrate\n", err)
 			}
 			argv := append([]string{realGH}, args...)
 			if os.Getenv("GH_AUTOPROFILE_DISABLE_SHIM") != "" {
@@ -52,6 +56,26 @@ func NewShimGHCMD() *cobra.Command {
 			return profileexec.Execute(cmd.Context(), ctx.Dir, argv, env, os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+}
+
+// refreshCredentialHelperPin repoints a managed helper's stale gh pin at realGH.
+func refreshCredentialHelperPin(realGH string) error {
+	if os.Getenv("GH_PATH") != "" || os.Getenv("GH_AUTOPROFILE_REAL_GH") != "" {
+		return nil
+	}
+	pinned, err := gitcred.RealGH()
+	if err != nil || pinned == "" || config.SamePath(pinned, realGH) {
+		return nil
+	}
+	if info, err := os.Stat(pinned); err == nil && config.IsExecutable(info) {
+		return nil
+	}
+	target, err := managementExtensionPath()
+	if err != nil {
+		return err
+	}
+	_, err = gitcred.Install(target, realGH)
+	return err
 }
 
 func shouldBypassAuthInjection(args []string) bool {
